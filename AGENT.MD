@@ -82,3 +82,36 @@ c:\Users\tkoma\apps\os-rpa-tool\
 ├── tests/                      # Automated test suite (15 tests passing)
 └── workflows/                  # Pre-built sample workflows
 ```
+
+---
+
+# Upcoming Roadmap: Additional Nodes TODO List
+
+### Priority 1: Control Flow Nodes
+- [ ] **`flow.start` (Start Node)**:
+  - Defines the explicit entry point of the workflow.
+  - Declares input argument schema and default values.
+  - Single output handle (bottom/right).
+- [ ] **`flow.end` (End Node)**:
+  - Explicit workflow termination with final status (`SUCCESS`, `FAILED`) and message.
+  - Extracts and returns specified output variables in the execution response.
+  - Single input handle (top/left).
+- [ ] **`flow.assign` (Assign Variable Node)**:
+  - Sets one or more context variables in a single step without writing Python code.
+  - Supports expression evaluation (e.g., `tax = subtotal * 0.21`, `clean_name = name.strip()`).
+- [ ] **`flow.loop` (Loop / For-Each Node)**:
+  - Iterates over collections (e.g., array of Excel rows, queue items) or runs counter/while conditions.
+  - Dual output handles: **Loop Body** (per-item branch) and **Done** (completion branch).
+  - Injects `loop.item` and `loop.index` into iteration scope.
+
+### Priority 2: Branching & Robustness Nodes
+- [ ] **`flow.if_else` (Decision Node)**:
+  - Visual conditional branching with dedicated **True** (Green) and **False** (Red) output ports.
+- [ ] **`flow.try_catch` (Error Handling Node)**:
+  - Wraps execution blocks with `Try`, `Catch` (captures error details), and `Finally` paths.
+
+### Priority 3: Utility & Integration Nodes
+- [ ] **`http.request` (REST API & Webhooks)**:
+  - Executes HTTP calls (`GET`, `POST`, `PUT`, `DELETE`) with headers, auth, and auto JSON parsing.
+- [ ] **`file.system` (File Operations)**:
+  - `file.read_text`, `file.write_text`, `file.copy`, `file.delete`.
