@@ -8,6 +8,9 @@ import {
   GitBranch,
   Search,
   Plus,
+  GitFork,
+  Network,
+  Folder,
 } from 'lucide-react'
 import type { ActionDef } from '../types'
 import { getCategoryMeta } from './RpaNode'
@@ -23,6 +26,9 @@ export const ActionPalette: React.FC<ActionPaletteProps> = ({ actions, onAddNode
 
   const categories: { id: string; label: string; icon: any }[] = [
     { id: 'all', label: 'All', icon: Search },
+    { id: 'flow', label: 'Flow', icon: GitFork },
+    { id: 'http', label: 'HTTP', icon: Network },
+    { id: 'file', label: 'File', icon: Folder },
     { id: 'queue', label: 'Queue', icon: Inbox },
     { id: 'web', label: 'Web', icon: Globe },
     { id: 'desktop', label: 'Desktop', icon: Monitor },

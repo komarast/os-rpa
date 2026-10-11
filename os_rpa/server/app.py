@@ -2,17 +2,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import json
 import asyncio
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from os_rpa.models import Workflow, QueueItem, ExecutionResult, ExecutionLogMessage
 from os_rpa.queue.manager import QueueManager
 from os_rpa.engine.runner import WorkflowRunner
 from os_rpa.actions.registry import ActionRegistry
+from os_rpa.server.dispatcher import dispatcher
 
-app = FastAPI(title="OS RPA Tool Engine API", version="0.1.0")
+app = FastAPI(title="OS RPA Tool Engine API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -99,7 +101,6 @@ def list_workflows():
 def get_workflow(workflow_id: str):
     file_path = WORKFLOWS_DIR / f"{workflow_id}.json"
     if not file_path.exists():
-        # try search by id inside files
         for f in WORKFLOWS_DIR.glob("*.json"):
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
@@ -206,8 +207,189 @@ async def run_workflow_ws(websocket: WebSocket):
             pass
 
 
+# --- Interactive Debugging WebSocket ---
+@app.websocket("/ws/debug")
+async def run_workflow_debug_ws(websocket: WebSocket):
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+
+    runner: Optional[WorkflowRunner] = None
+    exec_task: Optional[asyncio.Task] = None
+
+    try:
+        data = await websocket.receive_text()
+        init_msg = json.loads(data)
+        wf = Workflow(**init_msg.get("workflow"))
+        init_vars = init_msg.get("initial_variables", {})
+        initial_bps = set(init_msg.get("breakpoints", []))
+        initial_delay = float(init_msg.get("step_delay", 0.0))
+
+        def on_log(log_msg: ExecutionLogMessage):
+            asyncio.run_coroutine_threadsafe(
+                websocket.send_text(json.dumps({
+                    "event": "log",
+                    "data": log_msg.model_dump(),
+                })),
+                loop,
+            )
+
+        def on_node_start(node_id: str):
+            asyncio.run_coroutine_threadsafe(
+                websocket.send_text(json.dumps({
+                    "event": "node_start",
+                    "node_id": node_id,
+                })),
+                loop,
+            )
+
+        def on_node_complete(node_id: str, result: Any):
+            asyncio.run_coroutine_threadsafe(
+                websocket.send_text(json.dumps({
+                    "event": "node_complete",
+                    "node_id": node_id,
+                    "result": str(result)[:300] if result is not None else None,
+                })),
+                loop,
+            )
+
+        def on_pause(node_id: str, current_vars: Dict[str, Any]):
+            asyncio.run_coroutine_threadsafe(
+                websocket.send_text(json.dumps({
+                    "event": "paused",
+                    "node_id": node_id,
+                    "variables": current_vars,
+                })),
+                loop,
+            )
+
+        runner = WorkflowRunner(
+            queue_manager=queue_mgr,
+            on_node_start=on_node_start,
+            on_node_complete=on_node_complete,
+            on_log=on_log,
+            on_pause=on_pause,
+            breakpoints=initial_bps,
+            step_delay=initial_delay,
+        )
+
+        async def run_in_thread():
+            res = await asyncio.to_thread(runner.run, wf, init_vars)
+            await websocket.send_text(json.dumps({
+                "event": "finished",
+                "result": res.model_dump(),
+            }))
+
+        exec_task = asyncio.create_task(run_in_thread())
+
+        # Command listener loop
+        while True:
+            cmd_data = await websocket.receive_text()
+            cmd_json = json.loads(cmd_data)
+            cmd = cmd_json.get("cmd")
+
+            if cmd == "pause":
+                runner.request_pause()
+            elif cmd == "resume":
+                runner.request_resume()
+                await websocket.send_text(json.dumps({"event": "resumed"}))
+            elif cmd == "step":
+                runner.request_step()
+            elif cmd == "stop":
+                runner.request_stop()
+            elif cmd == "set_breakpoints":
+                runner.set_breakpoints(set(cmd_json.get("breakpoints", [])))
+            elif cmd == "set_delay":
+                runner.set_step_delay(float(cmd_json.get("delay", 0.0)))
+
+    except WebSocketDisconnect:
+        if runner:
+            runner.request_stop()
+    except Exception as e:
+        try:
+            await websocket.send_text(json.dumps({"event": "error", "message": str(e)}))
+        except Exception:
+            pass
+    finally:
+        if exec_task and not exec_task.done():
+            exec_task.cancel()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# --- Unattended Remote Bot Dispatcher Endpoints ---
+@app.websocket("/ws/agent")
+async def agent_websocket(websocket: WebSocket, bot_id: Optional[str] = Query(None)):
+    await websocket.accept()
+    assigned_bot_id = bot_id or f"bot_{websocket.client.host if websocket.client else 'client'}"
+    dispatcher.register_bot(assigned_bot_id, websocket)
+
+    try:
+        while True:
+            raw_text = await websocket.receive_text()
+            try:
+                msg = json.loads(raw_text)
+                dispatcher.handle_bot_message(assigned_bot_id, msg)
+            except Exception as e:
+                print(f"[!] Error parsing message from bot {assigned_bot_id}: {e}")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        dispatcher.unregister_bot(assigned_bot_id)
+
+
+@app.get("/api/bots")
+def list_connected_bots():
+    return dispatcher.list_bots()
+
+
+class TriggerJobRequest(BaseModel):
+    workflow: Workflow
+    variables: Optional[Dict[str, Any]] = None
+    target_bot_id: Optional[str] = None
+    timeout_seconds: Optional[float] = 300.0
+
+
+@app.post("/api/jobs/trigger")
+async def trigger_remote_job(req: TriggerJobRequest):
+    try:
+        job = await dispatcher.dispatch_job(
+            workflow=req.workflow.model_dump(),
+            variables=req.variables,
+            target_bot_id=req.target_bot_id,
+            timeout_seconds=req.timeout_seconds or 300.0,
+        )
+        return job
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    return dispatcher.list_jobs()
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job_status(job_id: str):
+    job = dispatcher.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/api/jobs/{job_id}/screenshot")
+def get_job_screenshot(job_id: str):
+    job = dispatcher.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    screenshot = job.get("screenshot")
+    if not screenshot:
+        raise HTTPException(status_code=404, detail="No screenshot available for this job")
+    return {"screenshot": screenshot}
+
+
 # Mount static studio build if present
 STUDIO_DIST = Path("studio/dist")
 if STUDIO_DIST.exists():
     app.mount("/", StaticFiles(directory=str(STUDIO_DIST), html=True), name="studio")
-

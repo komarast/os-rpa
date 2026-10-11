@@ -1,14 +1,16 @@
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 from os_rpa.models import ExecutionResult, Workflow, WorkflowNode
 from os_rpa.engine.context import ExecutionContext
 from os_rpa.engine.evaluator import evaluate_value, evaluate_expression
 from os_rpa.actions.registry import ActionRegistry
+from os_rpa.actions.flow import WorkflowTermination
 from os_rpa.queue.manager import QueueManager
 
 
 class WorkflowRunner:
-    """Executes an RPA workflow graph or sequence with variable propagation and lifecycle hooks."""
+    """Executes an RPA workflow graph or sequence with variable propagation, debugging, and lifecycle hooks."""
 
     def __init__(
         self,
@@ -16,11 +18,54 @@ class WorkflowRunner:
         on_node_start: Optional[Callable[[str], None]] = None,
         on_node_complete: Optional[Callable[[str, Any], None]] = None,
         on_log: Optional[Callable[[Any], None]] = None,
+        on_pause: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        step_delay: float = 0.0,
+        breakpoints: Optional[Set[str]] = None,
     ):
         self.queue_manager = queue_manager
         self.on_node_start = on_node_start
         self.on_node_complete = on_node_complete
         self.on_log = on_log
+        self.on_pause = on_pause
+        self.step_delay = max(0.0, float(step_delay))
+        self.breakpoints: Set[str] = set(breakpoints or [])
+
+        # Debugger control primitives
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # Not paused by default
+        self._step_event = threading.Event()
+        self._is_step_mode: bool = False
+        self._stop_requested: bool = False
+
+    def request_pause(self):
+        """Pauses execution before the next node executes."""
+        self._pause_event.clear()
+
+    def request_resume(self):
+        """Resumes running without single-stepping."""
+        self._is_step_mode = False
+        self._pause_event.set()
+        self._step_event.set()
+
+    def request_step(self):
+        """Steps over a single node then pauses."""
+        self._is_step_mode = True
+        self._pause_event.set()
+        self._step_event.set()
+
+    def request_stop(self):
+        """Requests immediate abortion of workflow execution."""
+        self._stop_requested = True
+        self._pause_event.set()
+        self._step_event.set()
+
+    def set_breakpoints(self, breakpoints: Set[str]):
+        """Dynamically updates active breakpoints."""
+        self.breakpoints = set(breakpoints)
+
+    def set_step_delay(self, delay: float):
+        """Dynamically updates slow-motion delay."""
+        self.step_delay = max(0.0, float(delay))
 
     def run(
         self,
@@ -29,7 +74,8 @@ class WorkflowRunner:
         queue_item: Optional[Any] = None,
     ) -> ExecutionResult:
         start_time = time.time()
-        
+        self._stop_requested = False
+
         # Merge initial variables from workflow default and runtime input
         combined_vars = workflow.variables.copy()
         if initial_variables:
@@ -57,6 +103,7 @@ class WorkflowRunner:
                 success=True,
                 status="COMPLETED",
                 variables=get_clean_vars(context.variables),
+                outputs={},
                 logs=context.logs,
                 duration_seconds=round(duration, 3),
             )
@@ -68,13 +115,43 @@ class WorkflowRunner:
             else:
                 self._execute_sequential(workflow.nodes, context)
 
-            context.success(f"Workflow '{workflow.name}' completed successfully")
+            if self._stop_requested:
+                context.warning("Workflow execution stopped by user request.")
+                duration = time.time() - start_time
+                return ExecutionResult(
+                    workflow_id=workflow.id,
+                    success=False,
+                    status="ABORTED",
+                    error="Execution stopped by user",
+                    variables=get_clean_vars(context.variables),
+                    outputs=context.variables.get("_final_outputs", {}),
+                    logs=context.logs,
+                    duration_seconds=round(duration, 3),
+                )
+
+            final_status = context.variables.get("_final_status", "COMPLETED")
+            final_outputs = context.variables.get("_final_outputs", {})
+            context.success(f"Workflow '{workflow.name}' completed with status: {final_status}")
             duration = time.time() - start_time
             return ExecutionResult(
                 workflow_id=workflow.id,
-                success=True,
-                status="COMPLETED",
+                success=(final_status in ("COMPLETED", "SUCCESS")),
+                status=final_status,
                 variables=get_clean_vars(context.variables),
+                outputs=final_outputs,
+                logs=context.logs,
+                duration_seconds=round(duration, 3),
+            )
+
+        except WorkflowTermination as wt:
+            duration = time.time() - start_time
+            return ExecutionResult(
+                workflow_id=workflow.id,
+                success=(wt.status == "SUCCESS"),
+                status=wt.status,
+                error=(wt.message if wt.status == "FAILED" else None),
+                variables=get_clean_vars(context.variables),
+                outputs=wt.outputs,
                 logs=context.logs,
                 duration_seconds=round(duration, 3),
             )
@@ -88,12 +165,15 @@ class WorkflowRunner:
                 status="FAILED",
                 error=str(e),
                 variables=get_clean_vars(context.variables),
+                outputs=context.variables.get("_final_outputs", {}),
                 logs=context.logs,
                 duration_seconds=round(duration, 3),
             )
 
     def _execute_sequential(self, nodes: List[WorkflowNode], context: ExecutionContext):
         for node in nodes:
+            if self._stop_requested:
+                break
             self._execute_node(node, context)
 
     def _execute_graph(
@@ -102,26 +182,31 @@ class WorkflowRunner:
         nodes_by_id: Dict[str, WorkflowNode],
         context: ExecutionContext,
     ):
-        # Build adjacency list: node_id -> list of (target_id, condition)
+        # Build adjacency list: node_id -> list of (target_id, condition, source_handle)
         adj: Dict[str, List[Any]] = {n_id: [] for n_id in nodes_by_id}
         in_degree: Dict[str, int] = {n_id: 0 for n_id in nodes_by_id}
 
         for edge in workflow.edges:
             if edge.source in adj and edge.target in nodes_by_id:
-                adj[edge.source].append((edge.target, edge.condition))
+                adj[edge.source].append((edge.target, edge.condition, edge.source_handle))
                 in_degree[edge.target] += 1
 
-        # Entry nodes have in-degree 0
-        current_batch = [n_id for n_id, deg in in_degree.items() if deg == 0]
-        if not current_batch:
-            # Fallback to first node
-            current_batch = [workflow.nodes[0].id]
+        # Entry nodes have in-degree 0 (or start with flow.start node if present)
+        start_nodes = [n_id for n_id, n in nodes_by_id.items() if n.type == "flow.start"]
+        if start_nodes:
+            current_batch = start_nodes
+        else:
+            current_batch = [n_id for n_id, deg in in_degree.items() if deg == 0]
+            if not current_batch:
+                current_batch = [workflow.nodes[0].id]
 
         visited: Set[str] = set()
 
-        while current_batch:
+        while current_batch and not self._stop_requested:
             next_batch = []
             for node_id in current_batch:
+                if self._stop_requested:
+                    break
                 if node_id in visited:
                     continue
                 node = nodes_by_id.get(node_id)
@@ -129,14 +214,27 @@ class WorkflowRunner:
                     continue
 
                 visited.add(node_id)
-                self._execute_node(node, context)
+                node_result = self._execute_node(node, context)
 
-                # Determine next branch
-                for target_id, condition in adj.get(node_id, []):
+                # Determine next branch edges
+                for target_id, condition, source_handle in adj.get(node_id, []):
                     should_follow = True
-                    if condition:
+
+                    # 1. Check handle-based condition (e.g. True / False output ports)
+                    if source_handle:
+                        handle_lower = source_handle.lower()
+                        if handle_lower in ("true", "yes"):
+                            should_follow = bool(node_result is True or node_result == "True" or node_result == 1)
+                        elif handle_lower in ("false", "no"):
+                            should_follow = bool(node_result is False or node_result == "False" or node_result == 0)
+
+                    # 2. Check explicit expression condition
+                    if should_follow and condition:
                         try:
-                            should_follow = bool(evaluate_expression(condition, context.variables))
+                            # Evaluate with context variables and last node result
+                            cond_scope = context.variables.copy()
+                            cond_scope["result"] = node_result
+                            should_follow = bool(evaluate_expression(condition, cond_scope))
                         except Exception as e:
                             context.warning(f"Condition '{condition}' error: {e}. Defaulting to False.")
                             should_follow = False
@@ -146,9 +244,25 @@ class WorkflowRunner:
 
             current_batch = next_batch
 
-    def _execute_node(self, node: WorkflowNode, context: ExecutionContext):
+    def _execute_node(self, node: WorkflowNode, context: ExecutionContext) -> Any:
         context.current_node_id = node.id
         node_display = node.name or node.type
+
+        # Check breakpoint or single-step pause
+        is_bp = node.id in self.breakpoints
+        if is_bp or self._is_step_mode:
+            context.info(f"Execution paused at node '{node_display}' (Breakpoint: {is_bp})")
+            if self.on_pause:
+                try:
+                    self.on_pause(node.id, {k: v for k, v in context.variables.items() if not k.startswith("_")})
+                except Exception:
+                    pass
+            self._pause_event.clear()
+            # Wait until resume or step event
+            self._pause_event.wait()
+            if self._stop_requested:
+                return None
+
         context.info(f"Executing step '{node_display}' [{node.type}] (id={node.id})")
 
         if self.on_node_start:
@@ -156,6 +270,10 @@ class WorkflowRunner:
                 self.on_node_start(node.id)
             except Exception:
                 pass
+
+        # Optional slow-motion delay
+        if self.step_delay > 0:
+            time.sleep(self.step_delay)
 
         action = ActionRegistry.get(node.type)
         eval_params = evaluate_value(node.params, context)
@@ -171,3 +289,4 @@ class WorkflowRunner:
             except Exception:
                 pass
 
+        return result

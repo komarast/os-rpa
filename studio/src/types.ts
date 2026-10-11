@@ -1,4 +1,14 @@
-export type ActionCategory = 'queue' | 'web' | 'desktop' | 'excel' | 'script' | 'logic' | 'general'
+export type ActionCategory =
+  | 'flow'
+  | 'http'
+  | 'file'
+  | 'queue'
+  | 'web'
+  | 'desktop'
+  | 'excel'
+  | 'script'
+  | 'logic'
+  | 'general'
 
 export interface ActionParamSchema {
   type: 'string' | 'number' | 'boolean' | 'select' | 'object' | 'array' | 'code' | 'any'
@@ -22,7 +32,8 @@ export interface WorkflowNodeData {
   name?: string
   params: Record<string, any>
   output?: string
-  executionState?: 'idle' | 'running' | 'success' | 'error'
+  executionState?: 'idle' | 'running' | 'success' | 'error' | 'paused'
+  hasBreakpoint?: boolean
   label?: string
 }
 
@@ -30,6 +41,8 @@ export interface WorkflowEdgeData {
   id: string
   source: string
   target: string
+  sourceHandle?: string
+  targetHandle?: string
   condition?: string
 }
 
@@ -50,6 +63,8 @@ export interface Workflow {
     id: string
     source: string
     target: string
+    source_handle?: string
+    target_handle?: string
     condition?: string
   }>
 }
@@ -87,3 +102,21 @@ export interface ExecutionLogMessage {
   details?: Record<string, any>
 }
 
+export interface StepHistoryItem {
+  nodeId: string
+  nodeName: string
+  nodeType: string
+  timestamp: string
+  status: 'running' | 'success' | 'error' | 'paused'
+  resultPreview?: string
+}
+
+export interface BotInfo {
+  bot_id: string
+  hostname: string
+  status: 'IDLE' | 'BUSY' | 'OFFLINE'
+  system: Record<string, any>
+  connected_at?: string
+  last_heartbeat?: string
+  is_online: boolean
+}

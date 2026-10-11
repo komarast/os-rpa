@@ -30,6 +30,22 @@ from os_rpa.actions.logic import (
     LogicSetVariableAction,
     LogicConditionAction,
 )
+from os_rpa.actions.flow import (
+    FlowStartAction,
+    FlowEndAction,
+    FlowAssignAction,
+    FlowIfElseAction,
+    FlowLoopAction,
+    FlowTryCatchAction,
+)
+from os_rpa.actions.http_action import HttpRequestAction
+from os_rpa.actions.file_system import (
+    FileReadTextAction,
+    FileWriteTextAction,
+    FileCopyAction,
+    FileDeleteAction,
+    FileExistsAction,
+)
 
 
 class ActionRegistry:
@@ -65,6 +81,21 @@ class ActionRegistry:
 
 # Automatically register all built-in actions
 ALL_BUILTIN_ACTIONS = [
+    # Control Flow
+    FlowStartAction,
+    FlowEndAction,
+    FlowAssignAction,
+    FlowIfElseAction,
+    FlowLoopAction,
+    FlowTryCatchAction,
+    # HTTP & Webhooks
+    HttpRequestAction,
+    # File Operations
+    FileReadTextAction,
+    FileWriteTextAction,
+    FileCopyAction,
+    FileDeleteAction,
+    FileExistsAction,
     # Queue
     QueueGetNextItemAction,
     QueueSetStatusAction,
@@ -99,4 +130,3 @@ ALL_BUILTIN_ACTIONS = [
 
 for act in ALL_BUILTIN_ACTIONS:
     ActionRegistry.register(act)
-

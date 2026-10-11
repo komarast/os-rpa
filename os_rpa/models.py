@@ -73,6 +73,7 @@ class ExecutionResult(BaseModel):
     status: str
     error: Optional[str] = None
     variables: Dict[str, Any] = Field(default_factory=dict)
+    outputs: Dict[str, Any] = Field(default_factory=dict)
     logs: List[ExecutionLogMessage] = Field(default_factory=list)
     duration_seconds: float = 0.0
 
