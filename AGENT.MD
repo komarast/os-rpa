@@ -115,3 +115,22 @@ c:\Users\tkoma\apps\os-rpa-tool\
   - Executes HTTP calls (`GET`, `POST`, `PUT`, `DELETE`) with headers, auth, and auto JSON parsing.
 - [ ] **`file.system` (File Operations)**:
   - `file.read_text`, `file.write_text`, `file.copy`, `file.delete`.
+
+---
+
+# Upcoming Roadmap: Interactive Debugging Panel TODO List
+
+- [ ] **Visual Breakpoints**:
+  - Click on any node's corner to toggle a red breakpoint dot.
+  - Runner pauses execution automatically when encountering a breakpoint.
+- [ ] **Execution Controls (Debug Toolbar)**:
+  - **Step Over (F10)**: Execute single node and pause at next node.
+  - **Pause / Resume (F5)**: Pause at any point or resume until next breakpoint.
+  - **Stop**: Abort workflow immediately.
+  - **Slow-Motion Slider**: Configurable delay (0ms – 2000ms) between steps to visually watch execution on screen.
+- [ ] **Live Variable Watcher & Inspector**:
+  - Real-time table showing all variables in `context.variables` (name, type, preview value).
+  - Ability to click and inspect complex objects/dicts (e.g. current queue item payload).
+  - Ability to edit variable values in memory while paused before resuming.
+- [ ] **Call Stack & Step History**:
+  - Chronological list of completed steps with inputs, outputs, duration, and error details.
