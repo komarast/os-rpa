@@ -1,0 +1,69 @@
+{
+  "id": "wf_1791726565810",
+  "name": "New Blank Workflow",
+  "description": "",
+  "variables": {},
+  "nodes": [
+    {
+      "id": "node_mv3vqqpy",
+      "type": "web.open_browser",
+      "name": "web.open_browser",
+      "params": {
+        "url": "https://cvbankas.lt",
+        "headless": false
+      },
+      "output": null,
+      "position": {
+        "x": 256.82343208175166,
+        "y": 213.35056037995147
+      }
+    },
+    {
+      "id": "node_mv3vrekk",
+      "type": "web.type",
+      "name": "web.type",
+      "params": {
+        "clear_first": true,
+        "text": "ai engineer",
+        "selector": "input[id='filter_keyword']"
+      },
+      "output": null,
+      "position": {
+        "x": 285.8590968751362,
+        "y": 355.78025841617523
+      }
+    },
+    {
+      "id": "node_mv3vzb8j",
+      "type": "web.click",
+      "name": "web.click",
+      "params": {
+        "timeout_ms": 5000,
+        "selector": "input[type='submit']"
+      },
+      "output": null,
+      "position": {
+        "x": 296.20739048898986,
+        "y": 539.5801322965157
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__node_mv3vqqpy-node_mv3vrekk",
+      "source": "node_mv3vqqpy",
+      "target": "node_mv3vrekk",
+      "source_handle": null,
+      "target_handle": null,
+      "condition": null
+    },
+    {
+      "id": "xy-edge__node_mv3vrekk-node_mv3vzb8j",
+      "source": "node_mv3vrekk",
+      "target": "node_mv3vzb8j",
+      "source_handle": null,
+      "target_handle": null,
+      "condition": null
+    }
+  ]
+}

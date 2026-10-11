@@ -1,0 +1,45 @@
+{
+  "id": "wf_1791727135312",
+  "name": "Test workflow",
+  "description": "",
+  "variables": {},
+  "nodes": [
+    {
+      "id": "node_mv3w2w4z",
+      "type": "logic.log",
+      "name": "logic.log",
+      "params": {
+        "message": "Processing item... {{var}}",
+        "level": "INFO"
+      },
+      "output": null,
+      "position": {
+        "x": 139.01221665728326,
+        "y": 265.4959918834682
+      }
+    },
+    {
+      "id": "node_mv3w3her",
+      "type": "script.python",
+      "name": "script.python",
+      "params": {
+        "code": "# Write custom Python code here\n# Available: context, variables, item, print()\nprint(\"running code\")\n\noutput =\"Hello\"\n\nvar=\"Shit\""
+      },
+      "output": "var",
+      "position": {
+        "x": 118.63855618127249,
+        "y": 50.94648426610236
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__node_mv3w3her-node_mv3w2w4z",
+      "source": "node_mv3w3her",
+      "target": "node_mv3w2w4z",
+      "source_handle": null,
+      "target_handle": null,
+      "condition": null
+    }
+  ]
+}

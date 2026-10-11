@@ -1,0 +1,63 @@
+{
+  "id": "demo_invoice_processor",
+  "name": "Queue Invoice & Excel Processor",
+  "description": "Demonstrates pulling an item from CustomerQueue, calculating discount via Python script, and appending to an Excel sheet.",
+  "variables": {
+    "report_path": "data/customer_report.xlsx"
+  },
+  "nodes": [
+    {
+      "id": "step_get_item",
+      "type": "queue.get_item",
+      "name": "Fetch Next Queue Item",
+      "params": {
+        "queue_name": "CustomerQueue"
+      },
+      "output": "current_item",
+      "position": { "x": 100, "y": 80 }
+    },
+    {
+      "id": "step_custom_script",
+      "type": "script.python",
+      "name": "Calculate Discount Script",
+      "params": {
+        "code": "# Calculate processing fee and status\nacc = item.get('account_id', 'UNKNOWN')\nact = item.get('action', 'none')\nstatus = 'VERIFIED' if act == 'verify' else 'PENDING'\n\ncontext.set('processed_status', status)\ncontext.set('account_name', f'Customer-{acc}')\noutput = {'status': status, 'account': acc}\nprint(f'Processed account {acc} with status {status}')\n"
+      },
+      "output": "calc_result",
+      "position": { "x": 100, "y": 220 }
+    },
+    {
+      "id": "step_append_excel",
+      "type": "excel.append_row",
+      "name": "Write to Customer Excel Report",
+      "params": {
+        "file_path": "{{report_path}}",
+        "sheet_name": "Customers",
+        "row_data": [
+          "{{account_name}}",
+          "{{processed_status}}",
+          "Success"
+        ]
+      },
+      "position": { "x": 100, "y": 360 }
+    },
+    {
+      "id": "step_set_success",
+      "type": "queue.set_status",
+      "name": "Mark Queue Item Complete",
+      "params": {
+        "status": "SUCCESS",
+        "output_data": {
+          "result": "{{calc_result}}"
+        }
+      },
+      "position": { "x": 100, "y": 500 }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "source": "step_get_item", "target": "step_custom_script" },
+    { "id": "e2", "source": "step_custom_script", "target": "step_append_excel" },
+    { "id": "e3", "source": "step_append_excel", "target": "step_set_success" }
+  ]
+}
+

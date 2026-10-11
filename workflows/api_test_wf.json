@@ -1,0 +1,21 @@
+{
+  "id": "api_test_wf",
+  "name": "API Workflow",
+  "description": "",
+  "variables": {
+    "factor": 3
+  },
+  "nodes": [
+    {
+      "id": "calc",
+      "type": "script.python",
+      "name": null,
+      "params": {
+        "code": "context.set('val', variables['factor'] * 7)"
+      },
+      "output": "res",
+      "position": null
+    }
+  ],
+  "edges": []
+}
