@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from os_rpa.models import ExecutionResult, Workflow, WorkflowNode
 from os_rpa.engine.context import ExecutionContext
 from os_rpa.engine.evaluator import evaluate_value, evaluate_expression
+from os_rpa.engine.snapshot import public_variables, to_jsonable, type_name
 from os_rpa.actions.registry import ActionRegistry
 from os_rpa.actions.flow import WorkflowTermination
 from os_rpa.queue.manager import QueueManager
@@ -19,6 +20,7 @@ class WorkflowRunner:
         on_node_complete: Optional[Callable[[str, Any], None]] = None,
         on_log: Optional[Callable[[Any], None]] = None,
         on_pause: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        on_variables: Optional[Callable[[Dict[str, Any]], None]] = None,
         step_delay: float = 0.0,
         breakpoints: Optional[Set[str]] = None,
     ):
@@ -27,6 +29,7 @@ class WorkflowRunner:
         self.on_node_complete = on_node_complete
         self.on_log = on_log
         self.on_pause = on_pause
+        self.on_variables = on_variables
         self.step_delay = max(0.0, float(step_delay))
         self.breakpoints: Set[str] = set(breakpoints or [])
 
@@ -36,6 +39,10 @@ class WorkflowRunner:
         self._step_event = threading.Event()
         self._is_step_mode: bool = False
         self._stop_requested: bool = False
+
+        # Live state for the debugger's variable inspector
+        self._context: Optional[ExecutionContext] = None
+        self.variable_sources: Dict[str, str] = {}
 
     def request_pause(self):
         """Pauses execution before the next node executes."""
@@ -67,6 +74,43 @@ class WorkflowRunner:
         """Dynamically updates slow-motion delay."""
         self.step_delay = max(0.0, float(delay))
 
+    def snapshot_variables(self) -> Dict[str, Any]:
+        """JSON-safe snapshot of current public variables with type and origin (node id,
+        'workflow', 'input', 'queue' or 'debugger') for each."""
+        if not self._context:
+            return {"variables": {}, "meta": {}}
+        current = public_variables(self._context.variables)
+        return {
+            "variables": {k: to_jsonable(v) for k, v in current.items()},
+            "meta": {
+                k: {"type": type_name(v), "source": self.variable_sources.get(k)}
+                for k, v in current.items()
+            },
+        }
+
+    def set_variable(self, name: str, value: Any):
+        """Overrides a variable from the debugger (typically while paused)."""
+        name = name.strip()
+        if not name.isidentifier() or name.startswith("_"):
+            raise ValueError(f"Invalid variable name '{name}'")
+        if not self._context:
+            raise RuntimeError("No workflow is running")
+        self._context.set(name, value)
+        self.variable_sources[name] = "debugger"
+        self._context.info(f"Debugger set variable '{name}' = {str(value)[:120]}")
+
+    def delete_variable(self, name: str):
+        if self._context and not name.startswith("_"):
+            self._context.variables.pop(name, None)
+            self.variable_sources.pop(name, None)
+
+    def _emit_variables(self):
+        if self.on_variables:
+            try:
+                self.on_variables(self.snapshot_variables())
+            except Exception:
+                pass
+
     def run(
         self,
         workflow: Workflow,
@@ -88,6 +132,13 @@ class WorkflowRunner:
         )
         if self.queue_manager:
             context.set("_queue_manager", self.queue_manager)
+
+        self._context = context
+        self.variable_sources = {k: "workflow" for k in workflow.variables}
+        self.variable_sources.update({k: "input" for k in (initial_variables or {})})
+        if queue_item is not None:
+            self.variable_sources.update({"item": "queue", "queue_item_id": "queue"})
+        self._emit_variables()
 
         context.info(f"Starting workflow '{workflow.name}' ({workflow.id})")
 
@@ -254,7 +305,7 @@ class WorkflowRunner:
             context.info(f"Execution paused at node '{node_display}' (Breakpoint: {is_bp})")
             if self.on_pause:
                 try:
-                    self.on_pause(node.id, {k: v for k, v in context.variables.items() if not k.startswith("_")})
+                    self.on_pause(node.id, self.snapshot_variables()["variables"])
                 except Exception:
                     pass
             self._pause_event.clear()
@@ -278,15 +329,23 @@ class WorkflowRunner:
         action = ActionRegistry.get(node.type)
         eval_params = evaluate_value(node.params, context)
 
-        result = action.execute(eval_params, context)
+        before = dict(context.variables)
+        try:
+            result = action.execute(eval_params, context)
 
-        if node.output:
-            context.set(node.output, result)
+            if node.output:
+                context.set(node.output, result)
+        finally:
+            # Attribute new/changed variables to this step (also on failure)
+            for k, v in context.variables.items():
+                if not k.startswith("_") and (k not in before or before[k] is not v):
+                    self.variable_sources[k] = node.id
 
         if self.on_node_complete:
             try:
                 self.on_node_complete(node.id, result)
             except Exception:
                 pass
+        self._emit_variables()
 
         return result

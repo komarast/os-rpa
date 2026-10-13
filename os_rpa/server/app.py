@@ -14,6 +14,7 @@ from os_rpa.engine.runner import WorkflowRunner
 from os_rpa.actions.registry import ActionRegistry
 from os_rpa.server.dispatcher import dispatcher
 from os_rpa.paths import studio_dist
+from os_rpa.engine.snapshot import json_default
 
 app = FastAPI(title="OS RPA Tool Engine API", version="0.2.0")
 
@@ -129,6 +130,11 @@ def delete_workflow(workflow_id: str):
     raise HTTPException(status_code=404, detail="Workflow not found")
 
 
+def _dumps(obj: Any) -> str:
+    """json.dumps for websocket events whose payloads may contain runtime objects (pages, handles)."""
+    return json.dumps(obj, default=json_default)
+
+
 # --- Execution Endpoints ---
 class RunWorkflowRequest(BaseModel):
     workflow: Workflow
@@ -155,7 +161,7 @@ async def run_workflow_ws(websocket: WebSocket):
 
         def on_log(log_msg: ExecutionLogMessage):
             asyncio.run_coroutine_threadsafe(
-                websocket.send_text(json.dumps({
+                websocket.send_text(_dumps({
                     "event": "log",
                     "data": log_msg.model_dump(),
                 })),
@@ -164,7 +170,7 @@ async def run_workflow_ws(websocket: WebSocket):
 
         def on_node_start(node_id: str):
             asyncio.run_coroutine_threadsafe(
-                websocket.send_text(json.dumps({
+                websocket.send_text(_dumps({
                     "event": "node_start",
                     "node_id": node_id,
                 })),
@@ -173,7 +179,7 @@ async def run_workflow_ws(websocket: WebSocket):
 
         def on_node_complete(node_id: str, result: Any):
             asyncio.run_coroutine_threadsafe(
-                websocket.send_text(json.dumps({
+                websocket.send_text(_dumps({
                     "event": "node_complete",
                     "node_id": node_id,
                     "result": str(result)[:300] if result is not None else None,
@@ -189,7 +195,7 @@ async def run_workflow_ws(websocket: WebSocket):
         )
 
         exec_res = await asyncio.to_thread(runner.run, wf, init_vars)
-        await websocket.send_text(json.dumps({
+        await websocket.send_text(_dumps({
             "event": "finished",
             "result": exec_res.model_dump(),
         }))
@@ -197,7 +203,7 @@ async def run_workflow_ws(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        await websocket.send_text(json.dumps({
+        await websocket.send_text(_dumps({
             "event": "error",
             "message": str(e),
         }))
@@ -227,7 +233,7 @@ async def run_workflow_debug_ws(websocket: WebSocket):
 
         def on_log(log_msg: ExecutionLogMessage):
             asyncio.run_coroutine_threadsafe(
-                websocket.send_text(json.dumps({
+                websocket.send_text(_dumps({
                     "event": "log",
                     "data": log_msg.model_dump(),
                 })),
@@ -236,7 +242,7 @@ async def run_workflow_debug_ws(websocket: WebSocket):
 
         def on_node_start(node_id: str):
             asyncio.run_coroutine_threadsafe(
-                websocket.send_text(json.dumps({
+                websocket.send_text(_dumps({
                     "event": "node_start",
                     "node_id": node_id,
                 })),
@@ -245,7 +251,7 @@ async def run_workflow_debug_ws(websocket: WebSocket):
 
         def on_node_complete(node_id: str, result: Any):
             asyncio.run_coroutine_threadsafe(
-                websocket.send_text(json.dumps({
+                websocket.send_text(_dumps({
                     "event": "node_complete",
                     "node_id": node_id,
                     "result": str(result)[:300] if result is not None else None,
@@ -255,11 +261,17 @@ async def run_workflow_debug_ws(websocket: WebSocket):
 
         def on_pause(node_id: str, current_vars: Dict[str, Any]):
             asyncio.run_coroutine_threadsafe(
-                websocket.send_text(json.dumps({
+                websocket.send_text(_dumps({
                     "event": "paused",
                     "node_id": node_id,
-                    "variables": current_vars,
+                    **runner.snapshot_variables(),
                 })),
+                loop,
+            )
+
+        def on_variables(snapshot: Dict[str, Any]):
+            asyncio.run_coroutine_threadsafe(
+                websocket.send_text(_dumps({"event": "variables", **snapshot})),
                 loop,
             )
 
@@ -269,13 +281,14 @@ async def run_workflow_debug_ws(websocket: WebSocket):
             on_node_complete=on_node_complete,
             on_log=on_log,
             on_pause=on_pause,
+            on_variables=on_variables,
             breakpoints=initial_bps,
             step_delay=initial_delay,
         )
 
         async def run_in_thread():
             res = await asyncio.to_thread(runner.run, wf, init_vars)
-            await websocket.send_text(json.dumps({
+            await websocket.send_text(_dumps({
                 "event": "finished",
                 "result": res.model_dump(),
             }))
@@ -292,7 +305,7 @@ async def run_workflow_debug_ws(websocket: WebSocket):
                 runner.request_pause()
             elif cmd == "resume":
                 runner.request_resume()
-                await websocket.send_text(json.dumps({"event": "resumed"}))
+                await websocket.send_text(_dumps({"event": "resumed"}))
             elif cmd == "step":
                 runner.request_step()
             elif cmd == "stop":
@@ -301,13 +314,22 @@ async def run_workflow_debug_ws(websocket: WebSocket):
                 runner.set_breakpoints(set(cmd_json.get("breakpoints", [])))
             elif cmd == "set_delay":
                 runner.set_step_delay(float(cmd_json.get("delay", 0.0)))
+            elif cmd in ("set_variable", "delete_variable"):
+                try:
+                    if cmd == "set_variable":
+                        runner.set_variable(str(cmd_json.get("name", "")), cmd_json.get("value"))
+                    else:
+                        runner.delete_variable(str(cmd_json.get("name", "")))
+                    await websocket.send_text(_dumps({"event": "variables", **runner.snapshot_variables()}))
+                except Exception as e:
+                    await websocket.send_text(_dumps({"event": "variable_error", "message": str(e)}))
 
     except WebSocketDisconnect:
         if runner:
             runner.request_stop()
     except Exception as e:
         try:
-            await websocket.send_text(json.dumps({"event": "error", "message": str(e)}))
+            await websocket.send_text(_dumps({"event": "error", "message": str(e)}))
         except Exception:
             pass
     finally:

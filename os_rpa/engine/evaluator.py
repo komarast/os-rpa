@@ -36,7 +36,8 @@ def evaluate_value(value: Any, context: ExecutionContext) -> Any:
         # Case 1: Exact single placeholder e.g. "{{my_var}}" or "{{item['price'] * 2}}"
         trimmed = value.strip()
         match = PATTERN.fullmatch(trimmed)
-        if match:
+        # "{{a}} and {{b}}" also fullmatches lazily across "}} ... {{"; treat that as interpolation
+        if match and "{{" not in match.group(1) and "}}" not in match.group(1):
             inner_expr = match.group(1).strip()
             try:
                 return evaluate_expression(inner_expr, context.variables)

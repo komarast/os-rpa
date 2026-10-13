@@ -20,6 +20,8 @@ import {
   SkipForward,
   Square,
   Gauge,
+  Database,
+  Variable,
 } from 'lucide-react'
 
 import type { ActionDef, ExecutionLogMessage, Workflow, StepHistoryItem, BotInfo } from './types'
@@ -28,6 +30,9 @@ import { ActionPalette } from './components/ActionPalette'
 import { PropertiesPanel } from './components/PropertiesPanel'
 import { QueueModal } from './components/QueueModal'
 import { ConsolePanel } from './components/ConsolePanel'
+import { DebugVariablesPanel } from './components/DebugVariablesPanel'
+import { DataManagerModal } from './components/DataManagerModal'
+import type { VariableMeta } from './variables'
 
 // Default template: Queue Invoice & Excel Processor
 const DEFAULT_TEMPLATE_NODES: Node[] = [
@@ -131,6 +136,13 @@ export function App() {
   // Debugging controls
   const [stepDelay, setStepDelay] = useState<number>(0) // in ms
   const [liveVariables, setLiveVariables] = useState<Record<string, any>>({})
+  const [liveMeta, setLiveMeta] = useState<Record<string, VariableMeta>>({})
+  const [isVarPanelOpen, setIsVarPanelOpen] = useState(false)
+  const [varError, setVarError] = useState<string | null>(null)
+
+  // Data Manager: workflow-level variables (saved with the workflow, set before the first step)
+  const [workflowVariables, setWorkflowVariables] = useState<Record<string, any>>({})
+  const [isDataManagerOpen, setIsDataManagerOpen] = useState(false)
   const [stepHistory, setStepHistory] = useState<StepHistoryItem[]>([])
   const [bots, setBots] = useState<BotInfo[]>([])
 
@@ -310,7 +322,7 @@ export function App() {
     return {
       id: workflowId,
       name: workflowName,
-      variables: {},
+      variables: workflowVariables,
       nodes: nodes.map((n) => {
         const d = n.data as any
         return {
@@ -367,6 +379,9 @@ export function App() {
         const data = await res.json()
         setWorkflowName(data.name || 'Untitled Workflow')
         setWorkflowId(data.id || wfId)
+        setWorkflowVariables(data.variables || {})
+        setLiveVariables({})
+        setLiveMeta({})
 
         const loadedNodes: Node[] = (data.nodes || []).map((n: any, idx: number) => ({
           id: n.id,
@@ -414,6 +429,7 @@ export function App() {
     setLogs([])
     setStepHistory([])
     setLiveVariables({})
+    setLiveMeta({})
     setExecutionDuration(undefined)
 
     setNodes((nds) =>
@@ -515,6 +531,9 @@ export function App() {
     setLogs([])
     setStepHistory([])
     setLiveVariables({})
+    setLiveMeta({})
+    setVarError(null)
+    setIsVarPanelOpen(true)
     setExecutionDuration(undefined)
 
     setNodes((nds) =>
@@ -582,6 +601,13 @@ export function App() {
           setIsPaused(true)
           setPausedNodeId(msg.node_id)
           setLiveVariables(msg.variables || {})
+          setLiveMeta(msg.meta || {})
+        } else if (msg.event === 'variables') {
+          setLiveVariables(msg.variables || {})
+          setLiveMeta(msg.meta || {})
+          setVarError(null)
+        } else if (msg.event === 'variable_error') {
+          setVarError(msg.message)
           setNodes((nds) =>
             nds.map((n) =>
               n.id === msg.node_id ? { ...n, data: { ...n.data, executionState: 'paused' } } : n
@@ -613,6 +639,21 @@ export function App() {
       setIsDebugging(false)
     }
   }
+
+  // Debugger variable edits (applied by the engine; it answers with a fresh 'variables' snapshot)
+  const handleSetVariable = (name: string, value: any) => {
+    debugSocketRef.current?.send(JSON.stringify({ cmd: 'set_variable', name, value }))
+  }
+
+  const handleDeleteVariable = (name: string) => {
+    debugSocketRef.current?.send(JSON.stringify({ cmd: 'delete_variable', name }))
+  }
+
+  const nodeNames = useMemo(() => {
+    const map: Record<string, string> = {}
+    nodes.forEach((n) => (map[n.id] = (n.data as any).name || (n.data as any).type || n.id))
+    return map
+  }, [nodes])
 
   // Debug controls
   const handleStepOver = () => {
@@ -681,6 +722,9 @@ export function App() {
   })
 
   const loadTemplate = (type: string) => {
+    setWorkflowVariables({})
+    setLiveVariables({})
+    setLiveMeta({})
     if (type === 'queue_excel') {
       setNodes(DEFAULT_TEMPLATE_NODES)
       setEdges(DEFAULT_TEMPLATE_EDGES)
@@ -884,6 +928,48 @@ export function App() {
             />
           </div>
 
+          {/* Data Manager */}
+          <button
+            onClick={() => setIsDataManagerOpen(true)}
+            style={{
+              backgroundColor: '#1e293b',
+              border: '1px solid #334155',
+              color: '#2dd4bf',
+              borderRadius: 6,
+              padding: '6px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+            }}
+            title="Manage workflow variables and inspect step data"
+          >
+            <Database size={13} /> Data
+          </button>
+
+          {/* Debug Variables panel toggle */}
+          <button
+            onClick={() => setIsVarPanelOpen((v) => !v)}
+            style={{
+              backgroundColor: isVarPanelOpen ? '#312e81' : '#1e293b',
+              border: '1px solid #334155',
+              color: '#c084fc',
+              borderRadius: 6,
+              padding: '6px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+            }}
+            title="Show / hide the debug variables panel"
+          >
+            <Variable size={13} /> Variables
+          </button>
+
           {/* Work Queues Modal */}
           <button
             onClick={() => setIsQueueModalOpen(true)}
@@ -1083,6 +1169,22 @@ export function App() {
             />
           </ReactFlow>
 
+          {/* Debug Variables inspector (live during debugging, final values afterwards) */}
+          {isVarPanelOpen && (
+            <DebugVariablesPanel
+              snapshot={{ variables: liveVariables, meta: liveMeta }}
+              nodeNames={nodeNames}
+              isPaused={isPaused}
+              isRunning={isRunning}
+              bottomOffset={isConsoleOpen ? 260 : 38}
+              error={varError}
+              onSetVariable={handleSetVariable}
+              onDeleteVariable={handleDeleteVariable}
+              onSelectNode={setSelectedNodeId}
+              onClose={() => setIsVarPanelOpen(false)}
+            />
+          )}
+
           {/* Bottom Execution Console Drawer with Live Variables & Call Stack */}
           <ConsolePanel
             logs={logs}
@@ -1111,6 +1213,17 @@ export function App() {
 
       {/* Queue Management Modal */}
       <QueueModal isOpen={isQueueModalOpen} onClose={() => setIsQueueModalOpen(false)} />
+
+      {/* Data Manager Modal */}
+      <DataManagerModal
+        isOpen={isDataManagerOpen}
+        onClose={() => setIsDataManagerOpen(false)}
+        workflowVariables={workflowVariables}
+        onChangeWorkflowVariables={setWorkflowVariables}
+        nodes={nodes}
+        lastRun={{ variables: liveVariables, meta: liveMeta }}
+        onSelectNode={setSelectedNodeId}
+      />
     </div>
   )
 }

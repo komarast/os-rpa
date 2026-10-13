@@ -94,3 +94,41 @@ def test_api_serves_studio_ui(client: TestClient):
     assert res.status_code == 200
     assert "OS RPA Studio" in res.text or "<div id=\"root\">" in res.text
 
+
+
+def test_debug_ws_streams_and_edits_variables(client: TestClient):
+    wf = {
+        "id": "wf_ws_vars",
+        "name": "WS Vars",
+        "variables": {},
+        "nodes": [
+            {"id": "n1", "type": "logic.set_variable", "params": {"variable_name": "count", "value": 1}},
+            {"id": "n2", "type": "logic.set_variable", "params": {"variable_name": "total", "value": "{{count + 1}}"}},
+        ],
+        "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
+    }
+
+    def read_until(ws, event):
+        while True:
+            msg = ws.receive_json()
+            if msg["event"] == event:
+                return msg
+
+    with client.websocket_connect("/ws/debug") as ws:
+        ws.send_json({"workflow": wf, "breakpoints": ["n2"]})
+        paused = read_until(ws, "paused")
+        assert paused["node_id"] == "n2"
+        assert paused["variables"]["count"] == 1
+        assert paused["meta"]["count"]["source"] == "n1"
+
+        ws.send_json({"cmd": "set_variable", "name": "count", "value": 41})
+        snap = read_until(ws, "variables")
+        assert snap["variables"]["count"] == 41
+        assert snap["meta"]["count"]["source"] == "debugger"
+
+        ws.send_json({"cmd": "set_variable", "name": "bad name", "value": 1})
+        assert "Invalid variable name" in read_until(ws, "variable_error")["message"]
+
+        ws.send_json({"cmd": "resume"})
+        finished = read_until(ws, "finished")
+        assert finished["result"]["variables"]["total"] == 42

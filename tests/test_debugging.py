@@ -94,3 +94,62 @@ def test_runner_stop_request():
     t.join(timeout=3.0)
 
     assert runner._stop_requested is True
+
+
+def test_runner_variable_snapshots_track_sources_and_debugger_edits():
+    wf = Workflow(
+        id="wf_vars_test",
+        name="Variables Test",
+        variables={"greeting": "hi"},
+        nodes=[
+            WorkflowNode(id="n1", type="logic.set_variable", params={"variable_name": "count", "value": 1}),
+            WorkflowNode(id="n2", type="logic.set_variable", params={"variable_name": "total", "value": "{{count + 1}}"}),
+        ],
+        edges=[WorkflowEdge(source="n1", target="n2")],
+    )
+
+    snapshots = []
+    paused = threading.Event()
+    runner = WorkflowRunner(
+        breakpoints={"n2"},
+        on_pause=lambda node_id, _vars: paused.set(),
+        on_variables=snapshots.append,
+    )
+
+    result = {}
+    t = threading.Thread(target=lambda: result.setdefault("res", runner.run(wf)))
+    t.start()
+    assert paused.wait(3.0)
+
+    snap = runner.snapshot_variables()
+    assert snap["variables"] == {"greeting": "hi", "count": 1}
+    assert snap["meta"]["greeting"] == {"type": "str", "source": "workflow"}
+    assert snap["meta"]["count"] == {"type": "int", "source": "n1"}
+
+    # Edit while paused: next step sees the new value
+    runner.set_variable("count", 41)
+    assert runner.snapshot_variables()["meta"]["count"]["source"] == "debugger"
+    try:
+        runner.set_variable("_internal", 1)
+        assert False, "private names must be rejected"
+    except ValueError:
+        pass
+
+    runner.request_resume()
+    t.join(timeout=3.0)
+
+    assert result["res"].variables["total"] == 42
+    assert snapshots[-1]["meta"]["total"]["source"] == "n2"
+    assert any("count" in s["variables"] for s in snapshots)
+
+
+def test_snapshot_handles_unserializable_values():
+    import json
+    from os_rpa.engine.snapshot import to_jsonable, json_default
+
+    class Page:
+        pass
+
+    value = {"page": Page(), "items": (1, 2), "nested": {"s": {3}}}
+    assert to_jsonable(value) == {"page": "<Page>", "items": [1, 2], "nested": {"s": [3]}}
+    assert json.loads(json.dumps({"v": Page()}, default=json_default)) == {"v": "<Page>"}

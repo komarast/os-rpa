@@ -90,3 +90,10 @@ def test_workflow_graph_conditional_branching():
     assert result.success is True
     assert result.variables.get("category") == "HIGH"
 
+
+
+def test_interpolation_with_placeholders_at_both_ends():
+    from os_rpa.engine.evaluator import evaluate_value
+    ctx = ExecutionContext(initial_variables={"greeting": "hello", "total": 13})
+    assert evaluate_value("{{greeting}} total={{total}}", ctx) == "hello total=13"
+    assert evaluate_value("{{total}}", ctx) == 13
