@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, Optional
 from pathlib import Path
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, Playwright
@@ -11,9 +12,28 @@ class PlaywrightSession:
     _browser: Optional[Browser] = None
     _context: Optional[BrowserContext] = None
     _page: Optional[Page] = None
+    browser_name: Optional[str] = None
 
     @classmethod
-    def get_or_create_page(cls, headless: bool = True) -> Page:
+    def _launch(cls, headless: bool, channel: str) -> Browser:
+        """Launch Chromium. channel: 'auto' (bundled, falling back to installed Edge),
+        'chromium' (bundled only), or an installed browser channel like 'msedge'/'chrome'."""
+        chromium = cls._playwright.chromium
+        if channel not in ("auto", "chromium"):
+            cls.browser_name = channel
+            return chromium.launch(headless=headless, channel=channel)
+        try:
+            cls.browser_name = "chromium"
+            return chromium.launch(headless=headless)
+        except Exception as e:
+            # Bundled browser not downloaded (e.g. `playwright install` blocked by a proxy)
+            if channel == "chromium" or "Executable doesn't exist" not in str(e):
+                raise
+            cls.browser_name = "msedge"
+            return chromium.launch(headless=headless, channel="msedge")
+
+    @classmethod
+    def get_or_create_page(cls, headless: bool = True, channel: Optional[str] = None) -> Page:
         if cls._page and not cls._page.is_closed():
             return cls._page
 
@@ -21,7 +41,8 @@ class PlaywrightSession:
             cls._playwright = sync_playwright().start()
 
         if not cls._browser or not cls._browser.is_connected():
-            cls._browser = cls._playwright.chromium.launch(headless=headless)
+            channel = channel or os.environ.get("OS_RPA_BROWSER_CHANNEL", "auto")
+            cls._browser = cls._launch(headless, channel)
             cls._context = cls._browser.new_context()
 
         cls._page = cls._context.new_page()
@@ -54,16 +75,22 @@ class WebOpenBrowserAction(BaseAction):
     params_schema = {
         "url": {"type": "string", "label": "Initial URL", "default": "https://google.com"},
         "headless": {"type": "boolean", "label": "Headless mode", "default": True},
+        "channel": {
+            "type": "select",
+            "options": ["auto", "chromium", "msedge", "chrome"],
+            "label": "Browser",
+            "default": "auto",
+        },
     }
 
     def execute(self, params: Dict[str, Any], context: ExecutionContext) -> Any:
         url = params.get("url", "https://google.com")
         headless = bool(params.get("headless", True))
 
-        page = PlaywrightSession.get_or_create_page(headless=headless)
+        page = PlaywrightSession.get_or_create_page(headless=headless, channel=params.get("channel"))
         page.goto(url, wait_until="domcontentloaded")
         title = page.title()
-        context.success(f"Opened browser at {url} (Title: '{title}')")
+        context.success(f"Opened {PlaywrightSession.browser_name} at {url} (Title: '{title}')")
         return {"url": url, "title": title}
 
 

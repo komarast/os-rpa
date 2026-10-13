@@ -1,6 +1,7 @@
 import pytest
 from starlette.testclient import TestClient
 from os_rpa.server.app import app
+from os_rpa.paths import studio_dist
 
 
 @pytest.fixture
@@ -86,6 +87,7 @@ def test_api_workflows_save_and_run(client: TestClient):
     assert run_data["variables"]["val"] == 21
 
 
+@pytest.mark.skipif(not studio_dist().exists(), reason="Studio not built: run `npm run build` in studio/")
 def test_api_serves_studio_ui(client: TestClient):
     # Tests that static build index.html is served at root
     res = client.get("/")

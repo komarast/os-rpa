@@ -13,6 +13,7 @@ from os_rpa.queue.manager import QueueManager
 from os_rpa.engine.runner import WorkflowRunner
 from os_rpa.actions.registry import ActionRegistry
 from os_rpa.server.dispatcher import dispatcher
+from os_rpa.paths import studio_dist
 
 app = FastAPI(title="OS RPA Tool Engine API", version="0.2.0")
 
@@ -390,6 +391,20 @@ def get_job_screenshot(job_id: str):
 
 
 # Mount static studio build if present
-STUDIO_DIST = Path("studio/dist")
+STUDIO_DIST = studio_dist()
 if STUDIO_DIST.exists():
     app.mount("/", StaticFiles(directory=str(STUDIO_DIST), html=True), name="studio")
+else:
+    @app.get("/", response_class=HTMLResponse)
+    def studio_not_built():
+        return f"""<!doctype html><html><head><title>OS RPA Studio</title></head>
+<body style="font-family:Segoe UI,sans-serif;max-width:640px;margin:60px auto;line-height:1.5">
+<h2>OS RPA Studio UI is not built</h2>
+<p>The engine API is running, but no Studio build was found at <code>{STUDIO_DIST}</code>.</p>
+<p>Build it, then restart the server:</p>
+<pre style="background:#f3f3f3;padding:12px">cd studio
+set NODE_USE_SYSTEM_CA=1
+npm ci
+npm run build</pre>
+<p>Or just run <code>start_app.bat</code>, which builds it automatically.</p>
+</body></html>"""

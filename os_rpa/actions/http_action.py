@@ -1,8 +1,19 @@
 import json
+import ssl
 from typing import Any, Dict, Optional
 import httpx
 from os_rpa.actions.base import BaseAction
 from os_rpa.engine.context import ExecutionContext
+
+
+def _ssl_context() -> Any:
+    """Verify TLS against the OS certificate store so corporate TLS-inspecting
+    proxies (e.g. Zscaler) whose root CA is installed in Windows are trusted."""
+    try:
+        import truststore
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except ImportError:
+        return True
 
 
 class HttpRequestAction(BaseAction):
@@ -37,6 +48,11 @@ class HttpRequestAction(BaseAction):
             "label": "Timeout (seconds)",
             "default": 30.0,
         },
+        "verify_ssl": {
+            "type": "boolean",
+            "label": "Verify SSL certificate",
+            "default": True,
+        },
     }
 
     def execute(self, params: Dict[str, Any], context: ExecutionContext) -> Dict[str, Any]:
@@ -45,6 +61,7 @@ class HttpRequestAction(BaseAction):
         headers = params.get("headers") or {}
         json_body = params.get("json_body")
         timeout = float(params.get("timeout", 30.0))
+        verify = _ssl_context() if params.get("verify_ssl", True) else False
 
         if not url:
             raise ValueError("URL is required for http.request")
@@ -63,7 +80,7 @@ class HttpRequestAction(BaseAction):
 
         context.info(f"Sending HTTP {method} request to {url}")
 
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True, verify=verify) as client:
             req_kwargs: Dict[str, Any] = {"headers": headers}
             if json_body is not None and method in ("POST", "PUT", "PATCH"):
                 req_kwargs["json"] = json_body

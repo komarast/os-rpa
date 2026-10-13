@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 import websockets
 from os_rpa.agent.forensics import capture_desktop_screenshot
+from os_rpa.paths import module_cmd
 
 
 class BotAgent:
@@ -125,15 +126,13 @@ class BotAgent:
         }), encoding="utf-8")
 
         # Launch worker subprocess
-        cmd = [
-            sys.executable,
-            "-m",
+        cmd = module_cmd(
             "os_rpa.agent.worker",
             "--job-file",
             str(job_file),
             "--output-file",
             str(output_file),
-        ]
+        )
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

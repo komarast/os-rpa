@@ -30,3 +30,4 @@ uiautomation==2.0.29
 uvicorn==0.54.0
 websockets>=13.0
 pillow>=11.0
+truststore>=0.10

@@ -1,4 +1,8 @@
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+import pytest
 from os_rpa.actions.registry import ActionRegistry
 from os_rpa.engine.context import ExecutionContext
 from os_rpa.models import Workflow, WorkflowNode
@@ -43,21 +47,49 @@ def test_file_operations(tmp_path: Path):
     assert copy_file.exists() is False
 
 
-def test_http_request_action():
-    # Test HTTP request against a reliable public endpoint or local mock
+class _EchoHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"path": self.path, "headers": dict(self.headers)}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def echo_server():
+    server = HTTPServer(("127.0.0.1", 0), _EchoHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+
+
+def test_http_request_action(echo_server: str):
     http_act = ActionRegistry.get("http.request")
-    # httpbin or raw jsonplaceholder
     res = http_act.execute(
         {
             "method": "GET",
-            "url": "https://httpbin.org/get",
+            "url": f"{echo_server}/get",
             "headers": {"X-Custom-RPA": "Antigravity"},
             "timeout": 10.0,
         },
         ExecutionContext(),
     )
-    assert isinstance(res, dict)
-    assert "status_code" in res
     assert res["status_code"] == 200
     assert res["ok"] is True
-    assert "headers" in res["data"]
+    assert res["data"]["path"] == "/get"
+    assert res["data"]["headers"]["X-Custom-RPA"] == "Antigravity"
+
+
+@pytest.mark.network
+def test_http_request_https_through_system_trust_store():
+    """Real HTTPS request; passes behind TLS-inspecting proxies (Zscaler) via truststore."""
+    http_act = ActionRegistry.get("http.request")
+    res = http_act.execute({"method": "GET", "url": "https://httpbin.org/get", "timeout": 15.0}, ExecutionContext())
+    assert res["status_code"] == 200
+
