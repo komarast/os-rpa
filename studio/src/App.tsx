@@ -26,6 +26,7 @@ import {
 
 import type { ActionDef, ExecutionLogMessage, Workflow, StepHistoryItem, BotInfo } from './types'
 import { RpaNode } from './components/RpaNode'
+import { DeletableEdge } from './components/DeletableEdge'
 import { ActionPalette } from './components/ActionPalette'
 import { PropertiesPanel } from './components/PropertiesPanel'
 import { QueueModal } from './components/QueueModal'
@@ -148,6 +149,9 @@ export function App() {
 
   const debugSocketRef = useRef<WebSocket | null>(null)
   const nodeTypes = useMemo(() => ({ rpaNode: RpaNode }), [])
+  const edgeTypes = useMemo(() => ({ deletable: DeletableEdge }), [])
+  // Render every untyped connection with the hover "x" remove button
+  const displayEdges = useMemo(() => edges.map((e) => (e.type ? e : { ...e, type: 'deletable' })), [edges])
 
   // Fetch saved workflows from API
   const fetchSavedWorkflows = useCallback(async () => {
@@ -1141,7 +1145,9 @@ export function App() {
         <div style={{ flex: 1, height: '100%', position: 'relative' }}>
           <ReactFlow
             nodes={nodes}
-            edges={edges}
+            edges={displayEdges}
+            edgeTypes={edgeTypes}
+            deleteKeyCode={['Backspace', 'Delete']}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}

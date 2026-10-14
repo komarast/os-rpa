@@ -1,6 +1,6 @@
 {
   "id": "wf_1791726565810",
-  "name": "New Blank Workflow",
+  "name": "Web automation",
   "description": "",
   "variables": {},
   "nodes": [
@@ -46,6 +46,35 @@
         "x": 296.20739048898986,
         "y": 539.5801322965157
       }
+    },
+    {
+      "id": "node_mv67vgla",
+      "type": "web.get_text",
+      "name": "web.get_text",
+      "params": {
+        "attribute": "",
+        "selector": "(//h3[@class='list_h3'])[]"
+      },
+      "output": null,
+      "position": {
+        "x": 317.8028385465799,
+        "y": 915.6938426478246
+      }
+    },
+    {
+      "id": "node_mv681uol",
+      "type": "flow.loop",
+      "name": "flow.loop",
+      "params": {
+        "collection": [],
+        "item_var": "loop_item",
+        "index_var": "loop_index"
+      },
+      "output": null,
+      "position": {
+        "x": 297.11210527457047,
+        "y": 749.4036803088909
+      }
     }
   ],
   "edges": [
@@ -61,6 +90,14 @@
       "id": "xy-edge__node_mv3vrekk-node_mv3vzb8j",
       "source": "node_mv3vrekk",
       "target": "node_mv3vzb8j",
+      "source_handle": null,
+      "target_handle": null,
+      "condition": null
+    },
+    {
+      "id": "xy-edge__node_mv3vzb8j-node_mv681uol",
+      "source": "node_mv3vzb8j",
+      "target": "node_mv681uol",
       "source_handle": null,
       "target_handle": null,
       "condition": null
