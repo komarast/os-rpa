@@ -222,10 +222,127 @@ class WorkflowRunner:
             )
 
     def _execute_sequential(self, nodes: List[WorkflowNode], context: ExecutionContext):
-        for node in nodes:
+        for idx, node in enumerate(nodes):
             if self._stop_requested:
                 break
-            self._execute_node(node, context)
+            node_result = self._execute_node(node, context)
+            if node.type == "flow.loop":
+                remaining = nodes[idx + 1:]
+                if remaining:
+                    self._run_loop_iterations(
+                        node,
+                        node_result,
+                        context,
+                        lambda: self._execute_sequential(remaining, context),
+                    )
+                break
+
+    @staticmethod
+    def _collect_reachable(
+        adj: Dict[str, List[Any]],
+        start_ids: List[str],
+        stop_ids: Set[str],
+    ) -> Set[str]:
+        reachable: Set[str] = set()
+        stack = [nid for nid in start_ids if nid not in stop_ids]
+        while stack:
+            curr = stack.pop()
+            if curr in reachable or curr in stop_ids:
+                continue
+            reachable.add(curr)
+            for target_id, _, _ in adj.get(curr, []):
+                if target_id not in reachable and target_id not in stop_ids:
+                    stack.append(target_id)
+        return reachable
+
+    def _run_loop_iterations(
+        self,
+        node: WorkflowNode,
+        loop_meta: Any,
+        context: ExecutionContext,
+        run_body_fn: Callable[[], None],
+    ):
+        meta = loop_meta if isinstance(loop_meta, dict) else {}
+        items = meta.get("items", [])
+        item_var = str(meta.get("item_var") or "loop_item")
+        index_var = str(meta.get("index_var") or "loop_index")
+        condition = str(meta.get("condition") or "").strip()
+        max_iterations = int(meta.get("max_iterations") or 1000)
+
+        if items:
+            total = len(items)
+            for idx, item in enumerate(items):
+                if self._stop_requested:
+                    break
+                context.set(item_var, item)
+                context.set(index_var, idx)
+                context.set(
+                    "loop",
+                    {
+                        "items": items,
+                        "total": total,
+                        "index": idx,
+                        "item": item,
+                        "is_first": idx == 0,
+                        "is_last": idx == total - 1,
+                        "item_var": item_var,
+                        "index_var": index_var,
+                    },
+                )
+                self.variable_sources[item_var] = node.id
+                self.variable_sources[index_var] = node.id
+                self.variable_sources["loop"] = node.id
+                self._emit_variables()
+
+                if condition:
+                    try:
+                        if not bool(evaluate_expression(condition, context.variables)):
+                            context.info(f"Loop condition '{condition}' is False at index {idx}; stopping loop.")
+                            break
+                    except Exception as e:
+                        context.warning(f"Loop condition '{condition}' error: {e}; stopping loop.")
+                        break
+
+                context.info(f"Loop iteration {idx + 1}/{total}: {item_var} = {repr(item)}")
+                run_body_fn()
+            context.info(f"Loop '{node.name or node.id}' completed ({total} item(s))")
+
+        elif condition:
+            idx = 0
+            while idx < max_iterations and not self._stop_requested:
+                try:
+                    cond_ok = bool(evaluate_expression(condition, context.variables))
+                except Exception as e:
+                    context.warning(f"Loop condition '{condition}' error: {e}; stopping loop.")
+                    break
+                if not cond_ok:
+                    context.info(f"Loop while-condition '{condition}' evaluated to False after {idx} iteration(s).")
+                    break
+
+                context.set(item_var, idx)
+                context.set(index_var, idx)
+                context.set(
+                    "loop",
+                    {
+                        "items": [],
+                        "total": idx + 1,
+                        "index": idx,
+                        "item": idx,
+                        "is_first": idx == 0,
+                        "is_last": False,
+                        "item_var": item_var,
+                        "index_var": index_var,
+                    },
+                )
+                self.variable_sources[item_var] = node.id
+                self.variable_sources[index_var] = node.id
+                self.variable_sources["loop"] = node.id
+                self._emit_variables()
+
+                context.info(f"While-loop iteration {idx + 1}: condition '{condition}' is True")
+                run_body_fn()
+                idx += 1
+            context.info(f"While-loop '{node.name or node.id}' completed ({idx} iteration(s))")
 
     def _execute_graph(
         self,
@@ -245,20 +362,31 @@ class WorkflowRunner:
         # Entry nodes have in-degree 0 (or start with flow.start node if present)
         start_nodes = [n_id for n_id, n in nodes_by_id.items() if n.type == "flow.start"]
         if start_nodes:
-            current_batch = start_nodes
+            entry_batch = start_nodes
         else:
-            current_batch = [n_id for n_id, deg in in_degree.items() if deg == 0]
-            if not current_batch:
-                current_batch = [workflow.nodes[0].id]
+            entry_batch = [n_id for n_id, deg in in_degree.items() if deg == 0]
+            if not entry_batch:
+                entry_batch = [workflow.nodes[0].id]
 
+        self._run_subgraph(adj, nodes_by_id, context, entry_batch, stop_ids=set())
+
+    def _run_subgraph(
+        self,
+        adj: Dict[str, List[Any]],
+        nodes_by_id: Dict[str, WorkflowNode],
+        context: ExecutionContext,
+        start_batch: List[str],
+        stop_ids: Set[str],
+    ):
         visited: Set[str] = set()
+        current_batch = [nid for nid in start_batch if nid not in stop_ids]
 
         while current_batch and not self._stop_requested:
             next_batch = []
             for node_id in current_batch:
                 if self._stop_requested:
                     break
-                if node_id in visited:
+                if node_id in visited or node_id in stop_ids:
                     continue
                 node = nodes_by_id.get(node_id)
                 if not node:
@@ -267,7 +395,42 @@ class WorkflowRunner:
                 visited.add(node_id)
                 node_result = self._execute_node(node, context)
 
-                # Determine next branch edges
+                # Special handling for flow.loop nodes
+                if node.type == "flow.loop":
+                    loop_targets: List[str] = []
+                    done_targets: List[str] = []
+
+                    for target_id, condition, source_handle in adj.get(node_id, []):
+                        handle_lower = (source_handle or "").strip().lower()
+                        if handle_lower in ("done", "exit", "completed", "false"):
+                            done_targets.append(target_id)
+                        else:
+                            # Default / 'loop' / 'body' / 'each' / 'true' handles execute inside the loop
+                            loop_targets.append(target_id)
+
+                    if loop_targets:
+                        done_reachable = self._collect_reachable(adj, done_targets, stop_ids={node_id})
+                        body_stop_ids = stop_ids | {node_id} | set(done_targets) | done_reachable
+
+                        self._run_loop_iterations(
+                            node,
+                            node_result,
+                            context,
+                            lambda lt=loop_targets, bstop=body_stop_ids: self._run_subgraph(
+                                adj, nodes_by_id, context, list(lt), bstop
+                            ),
+                        )
+
+                        # Mark loop body nodes as visited so outer graph doesn't re-run them
+                        body_nodes = self._collect_reachable(adj, loop_targets, stop_ids=body_stop_ids)
+                        visited.update(body_nodes)
+
+                    for dt in done_targets:
+                        if dt not in visited and dt not in stop_ids:
+                            next_batch.append(dt)
+                    continue
+
+                # Determine next branch edges for standard and conditional nodes
                 for target_id, condition, source_handle in adj.get(node_id, []):
                     should_follow = True
 
@@ -290,7 +453,7 @@ class WorkflowRunner:
                             context.warning(f"Condition '{condition}' error: {e}. Defaulting to False.")
                             should_follow = False
 
-                    if should_follow and target_id not in visited:
+                    if should_follow and target_id not in visited and target_id not in stop_ids:
                         next_batch.append(target_id)
 
             current_batch = next_batch

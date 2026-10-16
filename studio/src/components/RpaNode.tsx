@@ -73,9 +73,22 @@ export const RpaNode: React.FC<RpaNodeProps> = ({ id, data, selected }) => {
   const isStartNode = data.type === 'flow.start'
   const isEndNode = data.type === 'flow.end'
   const isDecisionNode = data.type === 'flow.if_else' || data.type === 'logic.condition'
+  const isLoopNode = data.type === 'flow.loop'
 
   const getParamPreview = () => {
     if (!data.params) return ''
+    if (isLoopNode) {
+      const coll = data.params.collection
+      const itemVar = data.params.item_var || 'loop_item'
+      if (coll !== undefined && String(coll).trim() !== '') {
+        const collStr = typeof coll === 'object' ? JSON.stringify(coll) : String(coll)
+        return `For ${itemVar} in ${collStr}`
+      }
+      if (data.params.condition) {
+        return `While: ${data.params.condition}`
+      }
+      return `For each ${itemVar}`
+    }
     if (data.params.condition) return `If: ${data.params.condition}`
     if (data.params.url) return `${data.params.url}`
     if (data.params.file_path) return `File: ${data.params.file_path}`
@@ -304,6 +317,30 @@ export const RpaNode: React.FC<RpaNodeProps> = ({ id, data, selected }) => {
                   type="source"
                   position={Position.Bottom}
                   style={{ left: '75%', background: '#ef4444', width: 10, height: 10 }}
+                />
+              </div>
+            </div>
+          ) : isLoopNode ? (
+            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 20px', position: 'relative' }}>
+              {/* Loop Body Handle */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: '#c084fc', marginBottom: 2 }}>LOOP BODY</span>
+                <Handle
+                  id="loop"
+                  type="source"
+                  position={Position.Bottom}
+                  style={{ left: '25%', background: '#c084fc', width: 10, height: 10 }}
+                />
+              </div>
+
+              {/* Loop Done Handle */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: '#10b981', marginBottom: 2 }}>DONE</span>
+                <Handle
+                  id="done"
+                  type="source"
+                  position={Position.Bottom}
+                  style={{ left: '75%', background: '#10b981', width: 10, height: 10 }}
                 />
               </div>
             </div>

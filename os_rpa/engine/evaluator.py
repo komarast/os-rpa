@@ -21,10 +21,18 @@ def evaluate_expression(expr: str, scope: Dict[str, Any]) -> Any:
             "bool": bool,
             "list": list,
             "dict": dict,
+            "tuple": tuple,
+            "set": set,
+            "range": range,
+            "enumerate": enumerate,
+            "abs": abs,
             "min": min,
             "max": max,
             "sum": sum,
             "round": round,
+            "all": all,
+            "any": any,
+            "sorted": sorted,
         }
     }
     return eval(expr, safe_globals, scope)

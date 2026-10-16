@@ -127,3 +127,92 @@ def test_flow_loop_action():
     assert res.success is True
     assert res.variables["loop"]["total"] == 3
     assert res.variables["loop"]["items"] == ["itemA", "itemB", "itemC"]
+
+
+def test_flow_loop_graph_body_and_done_execution():
+    wf = Workflow(
+        id="wf_loop_graph",
+        name="Loop Graph Body & Done Test",
+        variables={"running_sum": 0, "done_flag": False},
+        nodes=[
+            WorkflowNode(
+                id="n_loop",
+                type="flow.loop",
+                params={
+                    "collection": "[10, 20, 30]",
+                    "item_var": "val",
+                    "index_var": "idx",
+                },
+            ),
+            WorkflowNode(
+                id="n_add",
+                type="flow.assign",
+                params={
+                    "assignments": {
+                        "running_sum": "{{running_sum + val}}",
+                        "last_idx": "{{idx}}",
+                    }
+                },
+            ),
+            WorkflowNode(
+                id="n_done",
+                type="flow.assign",
+                params={
+                    "assignments": {
+                        "done_flag": True,
+                        "final_message": "Sum is {{running_sum}}",
+                    }
+                },
+            ),
+        ],
+        edges=[
+            WorkflowEdge(source="n_loop", target="n_add", source_handle="loop"),
+            WorkflowEdge(source="n_loop", target="n_done", source_handle="done"),
+        ],
+    )
+
+    runner = WorkflowRunner()
+    res = runner.run(wf)
+
+    assert res.success is True
+    assert res.variables["running_sum"] == 60
+    assert res.variables["last_idx"] == 2
+    assert res.variables["done_flag"] is True
+    assert res.variables["final_message"] == "Sum is 60"
+
+
+def test_flow_loop_while_condition():
+    wf = Workflow(
+        id="wf_loop_while",
+        name="While Loop Test",
+        variables={"counter": 0},
+        nodes=[
+            WorkflowNode(
+                id="n_loop",
+                type="flow.loop",
+                params={
+                    "collection": "",
+                    "condition": "counter < 4",
+                },
+            ),
+            WorkflowNode(
+                id="n_inc",
+                type="flow.assign",
+                params={
+                    "assignments": {
+                        "counter": "{{counter + 1}}",
+                    }
+                },
+            ),
+        ],
+        edges=[
+            WorkflowEdge(source="n_loop", target="n_inc", source_handle="loop"),
+        ],
+    )
+
+    runner = WorkflowRunner()
+    res = runner.run(wf)
+
+    assert res.success is True
+    assert res.variables["counter"] == 4
+

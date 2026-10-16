@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict, List, Optional
 from os_rpa.actions.base import BaseAction
 from os_rpa.engine.context import ExecutionContext
@@ -137,13 +138,16 @@ class FlowIfElseAction(BaseAction):
 class FlowLoopAction(BaseAction):
     name = "flow.loop"
     category = "flow"
-    description = "Iterates over a collection or count, exposing loop.item, loop.index, and loop.total."
+    description = (
+        "Iterates over a collection, count, or condition. "
+        "Connect 'LOOP' handle to actions to repeat, and 'DONE' handle to actions after completion."
+    )
     params_schema = {
         "collection": {
-            "type": "any",
-            "label": "Collection (list, range count, or variable reference)",
-            "required": True,
-            "default": [],
+            "type": "string",
+            "label": "Collection, Count, or Variable (e.g. 5, [1, 2, 3], or {{items}})",
+            "required": False,
+            "default": "[1, 2, 3]",
         },
         "item_var": {
             "type": "string",
@@ -155,23 +159,90 @@ class FlowLoopAction(BaseAction):
             "label": "Index Variable Name (injected into context)",
             "default": "loop_index",
         },
+        "condition": {
+            "type": "string",
+            "label": "While Condition (Optional, e.g. count < 10)",
+            "default": "",
+        },
+        "max_iterations": {
+            "type": "number",
+            "label": "Max Iterations (Safety Limit)",
+            "default": 1000,
+        },
     }
 
-    def execute(self, params: Dict[str, Any], context: ExecutionContext) -> Dict[str, Any]:
-        coll = params.get("collection", [])
+    @staticmethod
+    def parse_collection(coll: Any, context: ExecutionContext) -> List[Any]:
+        if coll is None:
+            return []
+        if isinstance(coll, bool):
+            return [coll]
         if isinstance(coll, int):
-            items = list(range(coll))
-        elif isinstance(coll, (list, tuple)):
-            items = list(coll)
-        elif isinstance(coll, dict):
-            items = list(coll.items())
-        else:
-            items = [coll]
+            return list(range(max(0, coll)))
+        if isinstance(coll, float):
+            return list(range(max(0, int(coll))))
+        if isinstance(coll, (list, tuple, set, range)):
+            return list(coll)
+        if isinstance(coll, dict):
+            return list(coll.items())
+        if isinstance(coll, str):
+            s = coll.strip()
+            if not s:
+                return []
+            # 1. Pure integer count e.g. "5"
+            if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+                return list(range(max(0, int(s))))
+            # 2. JSON array or object e.g. '[1, 2, 3]' or '["a", "b"]'
+            if (s.startswith("[") and s.endswith("]")) or (s.startswith("{") and s.endswith("}")):
+                try:
+                    parsed = json.loads(s)
+                    return FlowLoopAction.parse_collection(parsed, context)
+                except Exception:
+                    pass
+            # 3. Python expression or variable name e.g. "my_items" or "range(1, 5)"
+            try:
+                eval_res = evaluate_expression(s, context.variables)
+                if eval_res is not s:
+                    return FlowLoopAction.parse_collection(eval_res, context)
+            except Exception:
+                pass
+            # 4. Comma-separated values e.g. "item1, item2, item3"
+            if "," in s:
+                return [part.strip() for part in s.split(",") if part.strip()]
+            return [s]
+        return [coll]
+
+    def execute(self, params: Dict[str, Any], context: ExecutionContext) -> Dict[str, Any]:
+        coll_raw = params.get("collection", [])
+        item_var = str(params.get("item_var") or "loop_item").strip() or "loop_item"
+        index_var = str(params.get("index_var") or "loop_index").strip() or "loop_index"
+        condition = str(params.get("condition") or "").strip()
+        max_iterations = int(params.get("max_iterations") or 1000)
+
+        items = self.parse_collection(coll_raw, context)
+        if len(items) > max_iterations:
+            items = items[:max_iterations]
 
         total = len(items)
-        context.set("loop", {"items": items, "total": total})
-        context.info(f"Loop initialized with {total} items")
-        return {"items": items, "total": total}
+        first_item = items[0] if total > 0 else None
+
+        if total > 0:
+            context.set(item_var, first_item)
+            context.set(index_var, 0)
+
+        loop_meta = {
+            "items": items,
+            "total": total,
+            "index": 0,
+            "item": first_item,
+            "item_var": item_var,
+            "index_var": index_var,
+            "condition": condition,
+            "max_iterations": max_iterations,
+        }
+        context.set("loop", loop_meta)
+        context.info(f"Loop initialized with {total} items (item_var='{item_var}', index_var='{index_var}')")
+        return loop_meta
 
 
 class FlowTryCatchAction(BaseAction):
