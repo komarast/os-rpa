@@ -15,6 +15,9 @@ from os_rpa.actions.registry import ActionRegistry
 from os_rpa.server.dispatcher import dispatcher
 from os_rpa.paths import studio_dist
 from os_rpa.engine.snapshot import json_default
+from os_rpa.engine.workflow_store import find_workflow_file, workflows_dir
+from os_rpa.inspector.service import InspectorBusyError, inspector
+from os_rpa.inspector.browsers import list_instances as list_browser_instances
 
 app = FastAPI(title="OS RPA Tool Engine API", version="0.2.0")
 
@@ -26,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-WORKFLOWS_DIR = Path("workflows")
+WORKFLOWS_DIR = workflows_dir()
 WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
 queue_mgr = QueueManager("data/rpa_queues.db")
 
@@ -101,15 +104,8 @@ def list_workflows():
 
 @app.get("/api/workflows/{workflow_id}")
 def get_workflow(workflow_id: str):
-    file_path = WORKFLOWS_DIR / f"{workflow_id}.json"
-    if not file_path.exists():
-        for f in WORKFLOWS_DIR.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                if data.get("id") == workflow_id:
-                    return data
-            except Exception:
-                pass
+    file_path = find_workflow_file(workflow_id, WORKFLOWS_DIR)
+    if not file_path:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return json.loads(file_path.read_text(encoding="utf-8"))
 
@@ -339,6 +335,77 @@ async def run_workflow_debug_ws(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+
+
+# --- Element Inspector (desktop & web "indicate on screen") ---
+INSPECTOR_TARGETS = ("desktop", "web")
+
+
+INSPECTOR_WEB_SOURCES = ("new", "cdp", "window")
+
+
+class InspectorPickRequest(BaseModel):
+    target: str
+    url: Optional[str] = ""
+    channel: Optional[str] = "auto"
+    timeout: float = 120
+    # web only: 'new' browser window, 'cdp' attach to an open browser at `endpoint`, or any open 'window'
+    source: Optional[str] = "new"
+    endpoint: Optional[str] = ""
+
+
+class InspectorValidateRequest(BaseModel):
+    target: str
+    params: Dict[str, Any] = {}
+    url: Optional[str] = ""
+    channel: Optional[str] = "auto"
+    timeout: float = 10
+    endpoint: Optional[str] = ""
+
+
+def _check_inspector_target(target: str):
+    if target not in INSPECTOR_TARGETS:
+        raise HTTPException(status_code=400, detail=f"target must be one of {INSPECTOR_TARGETS}")
+
+
+@app.post("/api/inspector/pick")
+async def inspector_pick(req: InspectorPickRequest):
+    _check_inspector_target(req.target)
+    source = req.source or "new"
+    if source not in INSPECTOR_WEB_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source must be one of {INSPECTOR_WEB_SOURCES}")
+    if source == "cdp" and not req.endpoint:
+        raise HTTPException(status_code=400, detail="endpoint is required to attach to an open browser")
+    try:
+        return await asyncio.to_thread(
+            inspector.pick, req.target, req.url or "", req.channel or "auto", max(5.0, min(req.timeout, 600.0)),
+            source, req.endpoint or "",
+        )
+    except InspectorBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/api/inspector/browsers")
+async def inspector_browsers():
+    """Open browsers the web inspector can attach to (workflow browsers and debug-port browsers)."""
+    return await asyncio.to_thread(list_browser_instances)
+
+
+@app.post("/api/inspector/validate")
+async def inspector_validate(req: InspectorValidateRequest):
+    _check_inspector_target(req.target)
+    try:
+        return await asyncio.to_thread(
+            inspector.validate, req.target, req.params, req.url or "", req.channel or "auto",
+            max(1.0, min(req.timeout, 120.0)), req.endpoint or "",
+        )
+    except InspectorBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.post("/api/inspector/cancel")
+def inspector_cancel():
+    return {"cancelled": inspector.cancel()}
 
 
 # --- Unattended Remote Bot Dispatcher Endpoints ---

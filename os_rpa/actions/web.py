@@ -1,9 +1,25 @@
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 from pathlib import Path
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, Playwright
 from os_rpa.actions.base import BaseAction
 from os_rpa.engine.context import ExecutionContext
+
+
+def launch_with_fallback(launch: Callable[..., Any], channel: str, **kwargs) -> Tuple[Any, str]:
+    """Launch Chromium via a Playwright launcher (`chromium.launch` or `launch_persistent_context`).
+    channel: 'auto' (bundled, falling back to installed Edge), 'chromium' (bundled only), or an
+    installed browser channel like 'msedge'/'chrome'. Returns (browser_or_context, browser_name)."""
+    channel = channel or "auto"
+    if channel not in ("auto", "chromium"):
+        return launch(channel=channel, **kwargs), channel
+    try:
+        return launch(**kwargs), "chromium"
+    except Exception as e:
+        # Bundled browser not downloaded (e.g. `playwright install` blocked by a proxy)
+        if channel == "chromium" or "Executable doesn't exist" not in str(e):
+            raise
+        return launch(channel="msedge", **kwargs), "msedge"
 
 
 class PlaywrightSession:
@@ -13,24 +29,26 @@ class PlaywrightSession:
     _context: Optional[BrowserContext] = None
     _page: Optional[Page] = None
     browser_name: Optional[str] = None
+    debug_port: Optional[int] = None
 
     @classmethod
     def _launch(cls, headless: bool, channel: str) -> Browser:
-        """Launch Chromium. channel: 'auto' (bundled, falling back to installed Edge),
-        'chromium' (bundled only), or an installed browser channel like 'msedge'/'chrome'."""
+        from os_rpa.inspector import browsers
+
         chromium = cls._playwright.chromium
-        if channel not in ("auto", "chromium"):
-            cls.browser_name = channel
-            return chromium.launch(headless=headless, channel=channel)
-        try:
-            cls.browser_name = "chromium"
-            return chromium.launch(headless=headless)
-        except Exception as e:
-            # Bundled browser not downloaded (e.g. `playwright install` blocked by a proxy)
-            if channel == "chromium" or "Executable doesn't exist" not in str(e):
-                raise
-            cls.browser_name = "msedge"
-            return chromium.launch(headless=headless, channel="msedge")
+        # Headed runs need the full bundled browser; skip a slow failing launch when it isn't downloaded
+        if channel == "auto" and not headless and not Path(chromium.executable_path).exists():
+            channel = "msedge"
+        args = []
+        cls.debug_port = None
+        # Visible browsers get a localhost debug port so the Studio inspector can attach to them
+        if not headless and browsers.inspectable_browsers_enabled():
+            cls.debug_port = browsers.free_port()
+            args = [f"--remote-debugging-port={cls.debug_port}", "--remote-debugging-address=127.0.0.1"]
+        browser, cls.browser_name = launch_with_fallback(chromium.launch, channel, headless=headless, args=args)
+        if cls.debug_port:
+            browsers.register(cls.debug_port, cls.browser_name)
+        return browser
 
     @classmethod
     def get_or_create_page(cls, headless: bool = True, channel: Optional[str] = None) -> Page:
@@ -62,6 +80,10 @@ class PlaywrightSession:
         except Exception:
             pass
         finally:
+            from os_rpa.inspector import browsers
+
+            browsers.unregister(cls.debug_port)
+            cls.debug_port = None
             cls._page = None
             cls._context = None
             cls._browser = None

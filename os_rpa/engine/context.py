@@ -20,6 +20,10 @@ class ExecutionContext:
         self.logs: List[ExecutionLogMessage] = []
         self.current_node_id: Optional[str] = None
         self._on_log = on_log
+        # Set by WorkflowRunner: the runner executing this context and how deeply it is nested
+        # inside flow.invoke_workflow calls (0 = top-level run)
+        self.runner: Any = None
+        self.call_depth: int = 0
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.variables.get(key, default)

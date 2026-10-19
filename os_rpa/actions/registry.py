@@ -36,6 +36,7 @@ from os_rpa.actions.flow import (
     FlowAssignAction,
     FlowIfElseAction,
     FlowLoopAction,
+    FlowInvokeWorkflowAction,
     FlowTryCatchAction,
 )
 from os_rpa.actions.http_action import HttpRequestAction
@@ -87,6 +88,7 @@ ALL_BUILTIN_ACTIONS = [
     FlowAssignAction,
     FlowIfElseAction,
     FlowLoopAction,
+    FlowInvokeWorkflowAction,
     FlowTryCatchAction,
     # HTTP & Webhooks
     HttpRequestAction,

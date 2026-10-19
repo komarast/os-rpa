@@ -22,9 +22,10 @@ import {
   Gauge,
   Database,
   Variable,
+  Crosshair,
 } from 'lucide-react'
 
-import type { ActionDef, ExecutionLogMessage, Workflow, StepHistoryItem, BotInfo } from './types'
+import type { ActionDef, ExecutionLogMessage, Workflow, StepHistoryItem, BotInfo, InspectTarget } from './types'
 import { RpaNode } from './components/RpaNode'
 import { DeletableEdge } from './components/DeletableEdge'
 import { ActionPalette } from './components/ActionPalette'
@@ -33,7 +34,9 @@ import { QueueModal } from './components/QueueModal'
 import { ConsolePanel } from './components/ConsolePanel'
 import { DebugVariablesPanel } from './components/DebugVariablesPanel'
 import { DataManagerModal } from './components/DataManagerModal'
+import { InspectorModal } from './components/InspectorModal'
 import type { VariableMeta } from './variables'
+import { applyInspectorParams, guessStartUrl, inspectTargetFor } from './inspector'
 
 // Default template: Queue Invoice & Excel Processor
 const DEFAULT_TEMPLATE_NODES: Node[] = [
@@ -144,6 +147,13 @@ export function App() {
   // Data Manager: workflow-level variables (saved with the workflow, set before the first step)
   const [workflowVariables, setWorkflowVariables] = useState<Record<string, any>>({})
   const [isDataManagerOpen, setIsDataManagerOpen] = useState(false)
+
+  // UI element inspector; nodeId is set when opened from an activity ("Apply" target)
+  const [inspector, setInspector] = useState<{ open: boolean; target: InspectTarget; nodeId: string | null }>({
+    open: false,
+    target: 'web',
+    nodeId: null,
+  })
   const [stepHistory, setStepHistory] = useState<StepHistoryItem[]>([])
   const [bots, setBots] = useState<BotInfo[]>([])
 
@@ -249,7 +259,7 @@ export function App() {
     )
   }, [handleDeleteNode, handleToggleBreakpoint, setNodes])
 
-  const handleAddNode = (actionDef: ActionDef) => {
+  const handleAddNode = (actionDef: ActionDef, paramOverrides: Record<string, any> = {}) => {
     const newId = `node_${Date.now().toString(36)}`
     const defaultParams: Record<string, any> = {}
     Object.entries(actionDef.params_schema).forEach(([k, schema]) => {
@@ -257,6 +267,7 @@ export function App() {
         defaultParams[k] = schema.default
       }
     })
+    Object.assign(defaultParams, paramOverrides)
 
     const newNode: Node = {
       id: newId,
@@ -320,6 +331,29 @@ export function App() {
   const selectedActionDef = selectedNode
     ? actions.find((a) => a.type === (selectedNode.data as any).type) || null
     : null
+
+  const actionDefOf = (nodeId: string | null) => {
+    const node = nodes.find((n) => n.id === nodeId)
+    return node ? actions.find((a) => a.type === (node.data as any).type) || null : null
+  }
+
+  const inspectorNode = nodes.find((n) => n.id === inspector.nodeId) || null
+
+  const handleInspectNode = (nodeId: string) => {
+    const target = inspectTargetFor(actionDefOf(nodeId))
+    if (target) setInspector({ open: true, target, nodeId })
+  }
+
+  const handleApplyInspection = (picked: Record<string, any>) => {
+    const def = actionDefOf(inspector.nodeId)
+    if (!inspectorNode || !def) return
+    handleUpdateParams(inspectorNode.id, applyInspectorParams(def, (inspectorNode.data as any).params || {}, picked))
+  }
+
+  const handleCreateFromInspection = (type: string, picked: Record<string, any>) => {
+    const def = actions.find((a) => a.type === type)
+    if (def) handleAddNode(def, applyInspectorParams(def, {}, picked))
+  }
 
   // Build Workflow JSON
   const getWorkflowPayload = (): Workflow => {
@@ -932,6 +966,29 @@ export function App() {
             />
           </div>
 
+          {/* UI Element Inspector */}
+          <button
+            onClick={() =>
+              setInspector({ open: true, target: inspectTargetFor(selectedActionDef) || 'web', nodeId: null })
+            }
+            style={{
+              backgroundColor: '#1e293b',
+              border: '1px solid #334155',
+              color: '#f472b6',
+              borderRadius: 6,
+              padding: '6px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+            }}
+            title="Inspect desktop or web UI elements and generate selectors"
+          >
+            <Crosshair size={13} /> Inspect
+          </button>
+
           {/* Data Manager */}
           <button
             onClick={() => setIsDataManagerOpen(true)}
@@ -1212,13 +1269,26 @@ export function App() {
         <PropertiesPanel
           selectedNode={selectedNode}
           actionDef={selectedActionDef}
+          currentWorkflowId={workflowId}
           onUpdateParams={handleUpdateParams}
           onUpdateMetadata={handleUpdateMetadata}
+          onInspect={handleInspectNode}
         />
       </div>
 
       {/* Queue Management Modal */}
       <QueueModal isOpen={isQueueModalOpen} onClose={() => setIsQueueModalOpen(false)} />
+
+      {/* UI Element Inspector Modal */}
+      <InspectorModal
+        isOpen={inspector.open}
+        onClose={() => setInspector((s) => ({ ...s, open: false }))}
+        initialTarget={inspector.target}
+        defaultUrl={guessStartUrl(nodes)}
+        targetNodeLabel={inspectorNode ? (inspectorNode.data as any).name || (inspectorNode.data as any).type : null}
+        onApply={handleApplyInspection}
+        onCreateActivity={handleCreateFromInspection}
+      />
 
       {/* Data Manager Modal */}
       <DataManagerModal

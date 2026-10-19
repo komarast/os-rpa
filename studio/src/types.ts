@@ -11,7 +11,7 @@ export type ActionCategory =
   | 'general'
 
 export interface ActionParamSchema {
-  type: 'string' | 'number' | 'boolean' | 'select' | 'object' | 'array' | 'code' | 'any'
+  type: 'string' | 'number' | 'boolean' | 'select' | 'object' | 'array' | 'code' | 'workflow' | 'any'
   label?: string
   required?: boolean
   default?: any
@@ -109,6 +109,41 @@ export interface StepHistoryItem {
   timestamp: string
   status: 'running' | 'success' | 'error' | 'paused'
   resultPreview?: string
+}
+
+export type InspectTarget = 'desktop' | 'web'
+
+export interface SelectorCandidate {
+  kind: string
+  value: string
+  count: number
+  unique: boolean
+}
+
+// Response of /api/inspector/pick and /api/inspector/validate
+export interface InspectorResult {
+  ok: boolean
+  cancelled?: boolean
+  error?: string
+  target?: InspectTarget
+  element?: Record<string, any>
+  selectors?: SelectorCandidate[]
+  // Suggested activity params (keys of web.* / desktop.* params_schema)
+  params?: Record<string, any>
+  warnings?: string[]
+  found?: boolean
+  count?: number
+  unique?: boolean
+}
+
+// Open browser the web inspector can attach to (/api/inspector/browsers)
+export interface BrowserInstance {
+  endpoint: string
+  port: number
+  browser: string
+  label: string
+  source: 'workflow' | 'debug-port'
+  pages: Array<{ title: string; url: string }>
 }
 
 export interface BotInfo {

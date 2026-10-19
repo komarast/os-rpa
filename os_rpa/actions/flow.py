@@ -245,6 +245,102 @@ class FlowLoopAction(BaseAction):
         return loop_meta
 
 
+class FlowInvokeWorkflowAction(BaseAction):
+    name = "flow.invoke_workflow"
+    category = "flow"
+    description = (
+        "Runs another saved workflow as a sub-step: passes arguments in as its variables "
+        "and returns its flow.end outputs."
+    )
+    params_schema = {
+        "workflow": {
+            "type": "workflow",
+            "label": "Workflow (saved id, name, or .json path)",
+            "required": True,
+            "default": "",
+        },
+        "arguments": {
+            "type": "object",
+            "label": "Arguments (name -> expression or value)",
+            "default": {},
+            "description": "Initial variables of the invoked workflow, e.g. {\"invoice\": \"{{item}}\"}.",
+        },
+        "merge_outputs": {
+            "type": "boolean",
+            "label": "Copy outputs into this workflow's variables",
+            "default": False,
+        },
+        "fail_on_error": {
+            "type": "boolean",
+            "label": "Fail this step if the invoked workflow fails",
+            "default": True,
+        },
+    }
+
+    MAX_DEPTH = 16
+
+    def execute(self, params: Dict[str, Any], context: ExecutionContext) -> Dict[str, Any]:
+        # Imported here: the runner imports the action registry, which imports this module
+        from os_rpa.engine.runner import WorkflowRunner
+        from os_rpa.engine.workflow_store import load_workflow
+
+        ref = str(params.get("workflow") or "").strip()
+        if not ref:
+            raise ValueError("No workflow selected to invoke")
+        if context.call_depth >= self.MAX_DEPTH:
+            raise RecursionError(
+                f"Invoke depth limit ({self.MAX_DEPTH}) reached while invoking '{ref}' (recursive workflow call?)"
+            )
+
+        arguments = params.get("arguments") or {}
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments) if arguments.strip() else {}
+        if not isinstance(arguments, dict):
+            raise ValueError("'arguments' must be an object of name -> value")
+
+        child_wf = load_workflow(ref)
+        label = child_wf.name or child_wf.id
+
+        def on_log(msg: Any):
+            # Child logs are attributed to the invoking step and kept in this run's log
+            context.log(msg.level, f"[{label}] {msg.message}", msg.details)
+
+        context.info(f"Invoking workflow '{label}' with arguments {list(arguments.keys())}")
+        runner = context.runner
+        if runner is not None:
+            result = runner.run_child(child_wf, initial_variables=arguments, on_log=on_log)
+        else:
+            result = WorkflowRunner(queue_manager=context.get("_queue_manager"), on_log=on_log).run(
+                child_wf, initial_variables=arguments
+            )
+
+        outputs = dict(result.outputs or {})
+        summary = {
+            "workflow_id": child_wf.id,
+            "workflow": label,
+            "status": result.status,
+            "success": result.success,
+            "outputs": outputs,
+            "error": result.error,
+            "duration_seconds": result.duration_seconds,
+        }
+
+        if result.status == "ABORTED":
+            context.warning(f"Invoked workflow '{label}' was stopped")
+            return summary
+        if not result.success:
+            if bool(params.get("fail_on_error", True)):
+                raise RuntimeError(f"Invoked workflow '{label}' failed: {result.error or result.status}")
+            context.warning(f"Invoked workflow '{label}' failed: {result.error or result.status}")
+            return summary
+
+        if bool(params.get("merge_outputs", False)):
+            for k, v in outputs.items():
+                context.set(k, v)
+        context.success(f"Invoked workflow '{label}' finished with status {result.status}")
+        return summary
+
+
 class FlowTryCatchAction(BaseAction):
     name = "flow.try_catch"
     category = "flow"

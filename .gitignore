@@ -45,6 +45,10 @@ data/*.db-journal
 data/*.xlsx
 data/*.png
 data/*.log
+# Inspector browser profile (cookies / logins)
+data/inspector_profile/
+data/browser_sessions.json
+@AutomationLog.txt
 
 # IDE
 .vscode/

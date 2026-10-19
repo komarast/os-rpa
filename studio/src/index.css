@@ -95,3 +95,9 @@ body {
   background: #334155 !important;
   fill: #f8fafc !important;
 }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

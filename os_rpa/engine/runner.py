@@ -23,8 +23,13 @@ class WorkflowRunner:
         on_variables: Optional[Callable[[Dict[str, Any]], None]] = None,
         step_delay: float = 0.0,
         breakpoints: Optional[Set[str]] = None,
+        parent: Optional["WorkflowRunner"] = None,
     ):
         self.queue_manager = queue_manager
+        # Nested runs started by flow.invoke_workflow
+        self.parent = parent
+        self.call_depth: int = parent.call_depth + 1 if parent else 0
+        self._children: List["WorkflowRunner"] = []
         self.on_node_start = on_node_start
         self.on_node_complete = on_node_complete
         self.on_log = on_log
@@ -65,6 +70,23 @@ class WorkflowRunner:
         self._stop_requested = True
         self._pause_event.set()
         self._step_event.set()
+        for child in list(self._children):
+            child.request_stop()
+
+    def run_child(
+        self,
+        workflow: Workflow,
+        initial_variables: Optional[Dict[str, Any]] = None,
+        on_log: Optional[Callable[[Any], None]] = None,
+    ) -> ExecutionResult:
+        """Runs another workflow to completion as a nested call (flow.invoke_workflow).
+        Stopping this runner also stops the child."""
+        child = WorkflowRunner(queue_manager=self.queue_manager, on_log=on_log, parent=self)
+        self._children.append(child)
+        try:
+            return child.run(workflow, initial_variables=initial_variables)
+        finally:
+            self._children.remove(child)
 
     def set_breakpoints(self, breakpoints: Set[str]):
         """Dynamically updates active breakpoints."""
@@ -118,7 +140,7 @@ class WorkflowRunner:
         queue_item: Optional[Any] = None,
     ) -> ExecutionResult:
         start_time = time.time()
-        self._stop_requested = False
+        self._stop_requested = bool(self.parent and self.parent._stop_requested)
 
         # Merge initial variables from workflow default and runtime input
         combined_vars = workflow.variables.copy()
@@ -130,6 +152,8 @@ class WorkflowRunner:
             queue_item=queue_item,
             on_log=self.on_log,
         )
+        context.runner = self
+        context.call_depth = self.call_depth
         if self.queue_manager:
             context.set("_queue_manager", self.queue_manager)
 

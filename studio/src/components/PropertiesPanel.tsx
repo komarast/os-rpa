@@ -1,20 +1,126 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import Editor from '@monaco-editor/react'
+import { Crosshair, Download } from 'lucide-react'
 import type { ActionDef } from '../types'
 import type { Node } from '@xyflow/react'
+import { inspectTargetFor } from '../inspector'
 
 interface PropertiesPanelProps {
   selectedNode: Node | null
   actionDef: ActionDef | null
+  currentWorkflowId: string
   onUpdateParams: (nodeId: string, params: Record<string, any>) => void
   onUpdateMetadata: (nodeId: string, name?: string, output?: string) => void
+  onInspect: (nodeId: string) => void
+}
+
+const fieldStyle: React.CSSProperties = {
+  width: '100%',
+  backgroundColor: '#1e293b',
+  border: '1px solid #334155',
+  borderRadius: 6,
+  padding: '6px 10px',
+  color: '#f8fafc',
+  fontSize: 12,
+  outline: 'none',
+}
+
+/** Inputs a workflow declares: its workflow variables plus flow.start inputs, with defaults. */
+const declaredInputs = (wf: any): Record<string, any> => {
+  const inputs: Record<string, any> = { ...(wf.variables || {}) }
+  for (const n of wf.nodes || []) {
+    if (n.type === 'flow.start' && n.params?.inputs && typeof n.params.inputs === 'object') {
+      Object.assign(inputs, n.params.inputs)
+    }
+  }
+  return inputs
+}
+
+// Saved-workflow selector for flow.invoke_workflow; can prefill the arguments from the target's inputs
+const WorkflowParamField: React.FC<{
+  label: string
+  value: string
+  currentWorkflowId: string
+  onChange: (value: string) => void
+  onLoadArguments: (inputs: Record<string, any>) => void
+}> = ({ label, value, currentWorkflowId, onChange, onLoadArguments }) => {
+  const [workflows, setWorkflows] = useState<Array<{ id: string; name: string }>>([])
+  const [status, setStatus] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch('/api/workflows')
+      .then((r) => r.json())
+      .then((data) => setWorkflows(data))
+      .catch(() => setWorkflows([]))
+  }, [])
+
+  const known = workflows.some((w) => w.id === value)
+
+  const loadArguments = async () => {
+    setStatus(null)
+    try {
+      const res = await fetch(`/api/workflows/${encodeURIComponent(value)}`)
+      if (!res.ok) throw new Error('Workflow not found')
+      const inputs = declaredInputs(await res.json())
+      onLoadArguments(inputs)
+      setStatus(Object.keys(inputs).length ? `Loaded ${Object.keys(inputs).length} argument(s)` : 'Workflow declares no inputs')
+    } catch (e) {
+      setStatus(String(e))
+    }
+  }
+
+  return (
+    <div>
+      <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#94a3b8', marginBottom: 4 }}>{label}</label>
+      <select value={known ? value : value ? '__custom' : ''} onChange={(e) => e.target.value !== '__custom' && onChange(e.target.value)} style={fieldStyle}>
+        <option value="">Select a saved workflow...</option>
+        {workflows.map((w) => (
+          <option key={w.id} value={w.id} disabled={w.id === currentWorkflowId}>
+            {w.name} ({w.id}){w.id === currentWorkflowId ? ' - this workflow' : ''}
+          </option>
+        ))}
+        {!known && value && <option value="__custom">{value}</option>}
+      </select>
+      <input
+        type="text"
+        value={value}
+        placeholder="...or an id, name or path/to/workflow.json"
+        onChange={(e) => onChange(e.target.value)}
+        style={{ ...fieldStyle, marginTop: 6, fontSize: 11, color: '#94a3b8' }}
+      />
+      <button
+        onClick={loadArguments}
+        disabled={!value}
+        style={{
+          marginTop: 6,
+          background: '#1e293b',
+          border: '1px solid #334155',
+          color: value ? '#c084fc' : '#64748b',
+          borderRadius: 6,
+          padding: '4px 10px',
+          fontSize: 11,
+          fontWeight: 600,
+          cursor: value ? 'pointer' : 'not-allowed',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
+        }}
+        title="Add the invoked workflow's input variables to Arguments (existing entries are kept)"
+      >
+        <Download size={12} /> Load arguments
+      </button>
+      {status && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{status}</div>}
+    </div>
+  )
 }
 
 export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   selectedNode,
   actionDef,
+  currentWorkflowId,
   onUpdateParams,
   onUpdateMetadata,
+  onInspect,
 }) => {
   if (!selectedNode) {
     return (
@@ -122,6 +228,34 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
 
         <div style={{ height: 1, backgroundColor: '#334155', margin: '4px 0' }} />
 
+        {/* Element inspector for web / desktop activities */}
+        {inspectTargetFor(actionDef) && (
+          <button
+            onClick={() => onInspect(selectedNode.id)}
+            style={{
+              backgroundColor: '#1e293b',
+              border: '1px solid #f472b6',
+              color: '#f472b6',
+              borderRadius: 6,
+              padding: '7px 10px',
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+            }}
+            title={
+              inspectTargetFor(actionDef) === 'web'
+                ? 'Open a browser and click the element to generate its selector'
+                : 'Hover the element in the application and press Ctrl to capture it'
+            }
+          >
+            <Crosshair size={14} /> Indicate element on screen
+          </button>
+        )}
+
         {/* Dynamic Parameters */}
         {actionDef &&
           Object.entries(actionDef.params_schema).map(([key, schema]) => {
@@ -157,6 +291,22 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                     />
                   </div>
                 </div>
+              )
+            }
+
+            if (schema.type === 'workflow') {
+              return (
+                <WorkflowParamField
+                  key={key}
+                  label={schema.label || key}
+                  value={typeof currentVal === 'string' ? currentVal : ''}
+                  currentWorkflowId={currentWorkflowId}
+                  onChange={(val) => handleParamChange(key, val)}
+                  onLoadArguments={(inputs) => {
+                    const existing = params.arguments && typeof params.arguments === 'object' ? params.arguments : {}
+                    onUpdateParams(selectedNode.id, { ...params, [key]: currentVal, arguments: { ...inputs, ...existing } })
+                  }}
+                />
               )
             }
 

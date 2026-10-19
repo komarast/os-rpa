@@ -89,6 +89,13 @@ export const RpaNode: React.FC<RpaNodeProps> = ({ id, data, selected }) => {
       }
       return `For each ${itemVar}`
     }
+    if (data.type === 'flow.invoke_workflow') {
+      return data.params.workflow ? `Invoke: ${data.params.workflow}` : 'Invoke: (no workflow selected)'
+    }
+    if (data.type.startsWith('desktop.') && (data.params.name || data.params.automation_id)) {
+      const id = data.params.automation_id ? ` #${data.params.automation_id}` : ''
+      return `Element: ${data.params.control_type || ''} '${data.params.name || ''}'${id}`
+    }
     if (data.params.condition) return `If: ${data.params.condition}`
     if (data.params.url) return `${data.params.url}`
     if (data.params.file_path) return `File: ${data.params.file_path}`
